@@ -50,11 +50,35 @@ def _(nyse_df):
     df = nyse_df
 
     df = df.withColumn("source_file", functions.input_file_name())
-    df = df.withColumn("Symbol", functions.regexp_extract(functions.col("source_file"), r"([^/]+)\.csv$", 1))
+    df = df.withColumn("symbol", functions.regexp_extract(functions.col("source_file"), r"([^/]+)\.csv$", 1))
     df = df.drop("source_file")
 
-    df.head(1)
+    df = df.repartition("symbol")
 
+    df.show(10)
+
+    return df, functions
+
+
+@app.cell
+def _(df, functions):
+    # Daily returns per symbol
+    from pyspark.sql.window import Window
+
+    window = Window.partitionBy("Symbol").orderBy("timestamp")
+
+    df_windowed = df.withColumn("prev_close", functions.lag("close").over(window)).withColumn("daily_return", functions.try_divide(functions.col("close") - functions.col("prev_close"), functions.col("prev_close")))
+
+    df_windowed.select("symbol", "timestamp", "close", "daily_return").show(10)
+    return (df_windowed,)
+
+
+@app.cell
+def _(df_windowed, functions):
+    # Volatility
+    volatility = df_windowed.groupBy("symbol").agg(functions.stddev("daily_return").alias("volatility")).orderBy(functions.desc("volatility"))
+
+    volatility.show(20)
     return
 
 
