@@ -6,8 +6,6 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _():
-    import marimo as mo
-    import pyspark
     from pyspark.sql import functions as F
     from pyspark.sql import SparkSession
 
@@ -36,7 +34,7 @@ def _(spark):
 def _(F, spark):
     # Add symbols to the df and then save in parquet files
 
-    nyse_df = spark.read.csv("nyse/*/*.csv", header=True, inferSchema=True)
+    nyse_df = spark.read.csv("data/nyse/*/*.csv", header=True, inferSchema=True)
     nyse_df = nyse_df.withColumn("source_file", F.input_file_name())
     nyse_df = nyse_df.withColumn(
         "symbol",
@@ -47,7 +45,7 @@ def _(F, spark):
     nyse_df = nyse_df.dropDuplicates(["symbol", "timestamp"])
     nyse_df.repartition("symbol")
 
-    nyse_df.write.parquet("nyse-parquet/", mode="overwrite")
+    nyse_df.write.parquet("data/nyse-parquet/raw_data/", mode="overwrite")
 
     nyse_df.printSchema()
     nyse_df.count()
@@ -56,7 +54,7 @@ def _(F, spark):
 
 @app.cell
 def _(spark):
-    df = spark.read.parquet("nyse-parquet/*")
+    df = spark.read.parquet("data/nyse-parquet/raw_data/*")
 
     df.show(10)
     return (df,)
