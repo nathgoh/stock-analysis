@@ -3,7 +3,7 @@ import uuid
 import json
 import os
 
-OUTPUT_DIR = "/data/yfinance"
+OUTPUT_DIR = "../data/yfinance"
 SYMBOLS = ["VXUS", "VUG", "VTI", "SOXX", "FMAT", "IVV"]
 BUFFER_LIMIT = 10
 

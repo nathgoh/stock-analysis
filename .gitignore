@@ -217,8 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-data/
-
 # NYSE Kaggle dataset
-nyse/
-nyse-parquet/
+data/nyse/
+data/nyse-parquet/
+data/yfinance*
