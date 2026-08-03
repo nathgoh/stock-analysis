@@ -1,13 +1,15 @@
-import yfinance as yf
-import uuid
 import json
 import os
+import uuid
+
+import yfinance as yf
 
 OUTPUT_DIR = "../data/yfinance"
 SYMBOLS = ["VXUS", "VUG", "VTI", "SOXX", "FMAT", "IVV"]
 BUFFER_LIMIT = 10
 
 buffer = []
+
 
 def flush_buffer():
     global buffer
@@ -25,7 +27,7 @@ def message_handler(message):
     print(message)
     global buffer
     buffer.append(message)
-    
+
     if len(buffer) > BUFFER_LIMIT:
         flush_buffer()
 

@@ -1,6 +1,5 @@
-import re
 import html
-
+import re
 
 _BLOCK_RE: re.Pattern[str] = re.compile(
     r"<script\b[^>]*>.*?</script>",
@@ -76,18 +75,18 @@ _TAG_RE: re.Pattern[str] = re.compile(
 
 
 _MARKDOWN_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"!\[([^\]]*)\]\([^)]*\)"), r"\1"),          # images
-    (re.compile(r"\[([^\]]+)\]\([^)]*\)"), r"\1"),            # links
-    (re.compile(r"^#{1,6}\s+", re.MULTILINE), ""),           # headings
-    (re.compile(r"\*{1,3}([^*]+)\*{1,3}"), r"\1"),           # bold/italic
-    (re.compile(r"_{1,3}([^_]+)_{1,3}"), r"\1"),            # bold/italic
-    (re.compile(r"~~([^~]+)~~"), r"\1"),                    # strikethrough
-    (re.compile(r"`{1,3}([^`]+)`{1,3}"), r"\1"),            # inline/block code
-    (re.compile(r"^>\s+", re.MULTILINE), ""),               # blockquotes
-    (re.compile(r"^[-*+]\s+", re.MULTILINE), ""),           # unordered list markers
-    (re.compile(r"^\d+\.\s+", re.MULTILINE), ""),           # ordered list markers
-    (re.compile(r"^\s*[-*_]{3,}\s*$", re.MULTILINE), ""),   # horizontal rules
-    (re.compile(r"^(\s*\|.*\|\s*)$", re.MULTILINE), ""),    # table rows
+    (re.compile(r"!\[([^\]]*)\]\([^)]*\)"), r"\1"),  # images
+    (re.compile(r"\[([^\]]+)\]\([^)]*\)"), r"\1"),  # links
+    (re.compile(r"^#{1,6}\s+", re.MULTILINE), ""),  # headings
+    (re.compile(r"\*{1,3}([^*]+)\*{1,3}"), r"\1"),  # bold/italic
+    (re.compile(r"_{1,3}([^_]+)_{1,3}"), r"\1"),  # bold/italic
+    (re.compile(r"~~([^~]+)~~"), r"\1"),  # strikethrough
+    (re.compile(r"`{1,3}([^`]+)`{1,3}"), r"\1"),  # inline/block code
+    (re.compile(r"^>\s+", re.MULTILINE), ""),  # blockquotes
+    (re.compile(r"^[-*+]\s+", re.MULTILINE), ""),  # unordered list markers
+    (re.compile(r"^\d+\.\s+", re.MULTILINE), ""),  # ordered list markers
+    (re.compile(r"^\s*[-*_]{3,}\s*$", re.MULTILINE), ""),  # horizontal rules
+    (re.compile(r"^(\s*\|.*\|\s*)$", re.MULTILINE), ""),  # table rows
 ]
 
 

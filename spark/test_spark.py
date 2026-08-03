@@ -18,6 +18,6 @@ stream_df = spark.readStream.format("rate").option("rowsPerSecond", 1).load()
 
 result_df = stream_df.withColumn("result", F.col("value") + F.lit(1))
 
-result_df.writeStream.outputMode("append") \
-.option("truncate", False) \
-.format("console").start().awaitTermination()
+result_df.writeStream.outputMode("append").option("truncate", False).format(
+    "console"
+).start().awaitTermination()

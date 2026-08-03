@@ -101,9 +101,7 @@ def _(F, df, trailing):
     df_sma = df_sma.withColumn("sma_200", F.avg("close").over(trailing(200)))
     df_sma = df_sma.withColumn(
         "golden_cross",
-        F.when(F.col("sma_50") > F.col("sma_200"), 1).otherwise(
-            0
-        ),
+        F.when(F.col("sma_50") > F.col("sma_200"), 1).otherwise(0),
     )
 
     df_sma.show(20)
@@ -128,18 +126,16 @@ def _(F, df_daily_returns, trailing):
 def _(F, df, window):
     # Momentum, 7 and 14 day price change
     df_momentum = df.withColumn("close_7d_ago", F.lag("close", 7).over(window))
-    df_momentum = df_momentum.withColumn("close_14d_ago", F.lag("close", 14).over(window))
+    df_momentum = df_momentum.withColumn(
+        "close_14d_ago", F.lag("close", 14).over(window)
+    )
     df_momentum = df_momentum.withColumn(
         "momentum_7d",
-        F.try_divide(
-            F.col("close") - F.col("close_7d_ago"), F.col("close_7d_ago")
-        ),
+        F.try_divide(F.col("close") - F.col("close_7d_ago"), F.col("close_7d_ago")),
     )
     df_momentum = df_momentum.withColumn(
         "momentum_14d",
-        F.try_divide(
-            F.col("close") - F.col("close_14d_ago"), F.col("close_14d_ago")
-        ),
+        F.try_divide(F.col("close") - F.col("close_14d_ago"), F.col("close_14d_ago")),
     )
 
     df_momentum.show(20)
