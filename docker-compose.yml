@@ -95,7 +95,9 @@ services:
     
     jobmanager:
         hostname: flink-jobmanager
-        image: flink:latest
+        build:
+            context: .
+            dockerfile: Dockerfile
         networks:
             - analysis_network
         ports:
@@ -108,7 +110,9 @@ services:
 
     taskmanager:
         hostname: flink-taskmanager
-        image: flink:latest
+        build:
+            context: .
+            dockerfile: Dockerfile
         networks:
             - analysis_network
         depends_on:
