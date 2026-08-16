@@ -1,6 +1,8 @@
 # stock-analysis
 
-Processing NYSE stock market dataset using Spark
-Dataset from Kaggle: https://www.kaggle.com/datasets/flynn28/huge-nyse-dataset-2454-symbols
+## Playground for me to learn some data processing stuff
 
-Also playing around with Sparks streaming from yfinance real-time stock data
+- Processing NYSE stock market dataset using Spark
+    - Dataset from Kaggle: https://www.kaggle.com/datasets/flynn28/huge-nyse-dataset-2454-symbols
+- Spark streaming using yfinance real-time stock data
+- Create a stock news producer using redpanda by ingesting financial news data from Alpaca
