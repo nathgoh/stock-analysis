@@ -95,7 +95,10 @@ _BLANK_LINE_RE: re.Pattern[str] = re.compile(r"\n{3,}")
 
 
 def strip_html(text: str) -> str:
-    """Remove HTML tags from text and unescape HTML entities."""
+    """
+    Remove HTML tags from text and unescape HTML entities.
+    """
+
     if not text:
         return ""
     text = _BLOCK_RE.sub(" ", text)
@@ -105,7 +108,10 @@ def strip_html(text: str) -> str:
 
 
 def strip_markdown(text: str) -> str:
-    """Remove common Markdown formatting from text."""
+    """
+    Remove common Markdown formatting from text.
+    """
+
     if not text:
         return ""
     for pattern, replacement in _MARKDOWN_PATTERNS:
@@ -114,7 +120,10 @@ def strip_markdown(text: str) -> str:
 
 
 def clean_text(text: str) -> str:
-    """Strip HTML and Markdown, then normalize whitespace."""
+    """
+    Strip HTML and Markdown, then normalize whitespace.
+    """
+
     if not text:
         return ""
     text = strip_html(text)
@@ -122,12 +131,3 @@ def clean_text(text: str) -> str:
     text = _WHITESPACE_RE.sub(" ", text)
     text = _BLANK_LINE_RE.sub("\n\n", text)
     return text.strip()
-
-
-def clean_news_article(article: dict) -> dict:
-    """Return a copy of the news article with cleaned text fields."""
-    cleaned = dict(article)
-    for field in ("headline", "summary", "content"):
-        if field in cleaned and isinstance(cleaned[field], str):
-            cleaned[field] = clean_text(cleaned[field])
-    return cleaned

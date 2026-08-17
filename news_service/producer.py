@@ -3,13 +3,12 @@ import os
 from datetime import UTC, datetime, timedelta
 
 from alpaca.data.historical import NewsClient
-from alpaca.data.live import NewsDataStream
 from alpaca.data.models import News, NewsSet
 from alpaca.data.requests import NewsRequest
 from dotenv import load_dotenv
 from kafka import KafkaProducer
 
-from text_utils import clean_text
+from utils.text_utils import clean_text
 
 load_dotenv()
 
@@ -23,22 +22,6 @@ def on_success(metadata) -> None:
 
 def on_error(e) -> None:
     print(f"Error sending message: {e}")
-
-
-# def news_stream(symbols: list[str]) -> None:
-#     stream = NewsDataStream(
-#         api_key=ALPACA_API_KEY,
-#         secret_key=ALPACA_SECRET_KEY,
-#     )
-
-#     stream.subscribe_news(on_news, *symbols)
-#     stream.run()
-
-# async def on_news(news_article) -> None:
-#     headline: str = news_article.headline
-#     summary: str = news_article.summary
-#     content: str = clean_text(news_article.content)
-#     date: datetime = news_article.created_at
 
 
 def produce_historical_news(
@@ -57,19 +40,16 @@ def produce_historical_news(
             sort="asc",
             limit=6000,
         )
-        news: NewsSet = rest_client.get_news(request_params)
+        news: NewsSet  = rest_client.get_news(request_params)
         news_article: News = news.data["news"][2]
 
-        headline: str = news_article.headline
-        summary: str = news_article.summary
         content: str = clean_text(news_article.content)
-        date: datetime = news_article.created_at
-
+        news_date: datetime = news_article.created_at
         message = {
-            "headline": headline,
-            "summary": summary,
+            "headline": news_article.headline,
+            "summary": news_article.summary,
             "content": content,
-            "date": date.isoformat(),
+            "date": news_date.isoformat(),
         }
 
         redpanda_client.send(
@@ -78,7 +58,6 @@ def produce_historical_news(
             key=symbol,
             timestamp_ms=int(now.timestamp() * 1000),
         )
-        redpanda_client.flush()
 
 
 if __name__ == "__main__":
