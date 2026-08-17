@@ -1,4 +1,3 @@
-import json
 import os
 from datetime import UTC, datetime, timedelta
 
@@ -8,6 +7,7 @@ from alpaca.data.requests import NewsRequest
 from dotenv import load_dotenv
 from kafka import KafkaProducer
 
+from utils.models import NewsMessage
 from utils.text_utils import clean_text
 
 load_dotenv()
@@ -43,32 +43,21 @@ def produce_historical_news(
         news: NewsSet  = rest_client.get_news(request_params)
         news_article: News = news.data["news"][2]
 
-        content: str = clean_text(news_article.content)
-        news_date: datetime = news_article.created_at
-        message = {
-            "headline": news_article.headline,
-            "summary": news_article.summary,
-            "content": content,
-            "date": news_date.isoformat(),
-        }
+        message = NewsMessage(
+            headline=news_article.headline,
+            summary=news_article.summary,
+            content=clean_text(news_article.content),
+            date=news_article.created_at,
+        )
 
-        redpanda_client.send(
+        future = redpanda_client.send(
             topic,
-            value=json.dumps(message),
+            value=message.to_kafka_value(),
             key=symbol,
             timestamp_ms=int(now.timestamp() * 1000),
         )
+        future.add_callback(on_success)
+        future.add_errback(on_error)
 
 
-if __name__ == "__main__":
-    topic = "market-news"
-    news_producer = KafkaProducer(
-        bootstrap_servers="localhost:19092",
-        key_serializer=str.encode,
-        value_serializer=lambda v: v.encode("utf-8"),
-    )
-    produce_historical_news(
-        news_producer, topic, ["AAPL", "GOOG", "MSFT", "TSLA", "NVDA"]
-    )
 
-    news_producer.close()

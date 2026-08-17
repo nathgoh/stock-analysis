@@ -1,0 +1,6 @@
+# Stock Analysis Configuration
+kafka:
+  bootstrap_servers: localhost:19092
+  topics:
+    live: market-news
+    historical: historical-market-news

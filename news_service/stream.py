@@ -1,17 +1,25 @@
-import json
 import os
-from datetime import datetime
 
 from alpaca.data.live import NewsDataStream
 from dotenv import load_dotenv
 from kafka import KafkaProducer
 
+from utils.models import NewsMessage
 from utils.text_utils import clean_text
 
 load_dotenv()
 
 ALPACA_API_KEY: str | None = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY: str | None = os.getenv("ALPACA_SECRET_KEY")
+
+
+def on_success(metadata) -> None:
+    print(f"Message produced to topic '{metadata.topic}' at offset {metadata.offset}")
+
+
+def on_error(e) -> None:
+    print(f"Error sending message: {e}")
+
 
 def news_stream(redpanda_client: KafkaProducer, topic: str, symbols: list[str]) -> None:
     if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
@@ -25,21 +33,21 @@ def news_stream(redpanda_client: KafkaProducer, topic: str, symbols: list[str]) 
     )
 
     async def on_news(news_article) -> None:
-        content: str = clean_text(news_article.content)
-        news_date: datetime = news_article.created_at
-        message = {
-            "headline": news_article.headline,
-            "summary": news_article.summary,
-            "content": content,
-            "date": news_date.isoformat(),
-        }
+        message = NewsMessage(
+            headline=news_article.headline,
+            summary=news_article.summary,
+            content=clean_text(news_article.content),
+            date=news_article.created_at,
+        )
 
         for symbol in news_article.symbols:
-            redpanda_client.send(
+            future = redpanda_client.send(
                 topic,
                 key=symbol,
-                value=json.dumps(message)
+                value=message.to_kafka_value(),
             )
+            future.add_callback(on_success)
+            future.add_errback(on_error)
 
     stream.subscribe_news(on_news, *symbols)
     stream.run()
