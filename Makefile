@@ -12,8 +12,11 @@ help: ## Show this help message
 	@echo "Targets:"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
-run: ## Build and start all containers in the background
+up: ## Build and start all containers in the background
 	$(DOCKER_COMPOSE) up -d --build
+
+run-news: ### Run the news producer / stream
+	uv run python -m news_service
 
 down: ## Stop and remove all containers and networks
 	$(DOCKER_COMPOSE) down
