@@ -40,7 +40,7 @@ def produce_historical_news(
             sort="asc",
             limit=6000,
         )
-        news: NewsSet  = rest_client.get_news(request_params)
+        news: NewsSet = rest_client.get_news(request_params)
         news_article: News = news.data["news"][2]
 
         message = NewsMessage(
@@ -58,6 +58,3 @@ def produce_historical_news(
         )
         future.add_callback(on_success)
         future.add_errback(on_error)
-
-
-

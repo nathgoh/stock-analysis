@@ -24,7 +24,7 @@ def on_error(e) -> None:
 def news_stream(redpanda_client: KafkaProducer, topic: str, symbols: list[str]) -> None:
     if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
         raise ValueError(
-            "ALPACA_API_KEY and ALPACA_SECRET_KEY environment variables must be set."    
+            "ALPACA_API_KEY and ALPACA_SECRET_KEY environment variables must be set."
         )
 
     stream = NewsDataStream(
