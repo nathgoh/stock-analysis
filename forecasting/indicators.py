@@ -38,14 +38,26 @@ class IndicatorSpec:
 
 
 def _sma(df: pd.DataFrame, window: int) -> pd.Series:
+    """
+    Calculate the simple moving average (SMA) of closing prices over a specified window.
+    """
+
     return df["close"].rolling(window=window).mean()
 
 
 def _ema(df: pd.DataFrame, window: int) -> pd.Series:
+    """
+    Calculate the exponential moving average (EMA) of closing prices over a specified window.
+    """
+
     return df["close"].ewm(span=window).mean()
 
 
 def _rsi(df: pd.DataFrame, window: int) -> pd.Series:
+    """
+    Calculate the Relative Strength Index (RSI) over a specified rolling window.
+    """
+
     delta = df["close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
@@ -55,6 +67,10 @@ def _rsi(df: pd.DataFrame, window: int) -> pd.Series:
 
 
 def _macd(df: pd.DataFrame) -> pd.Series:
+    """
+    Calculate the Moving Average Convergence Divergence (MACD) line.
+    """
+
     ema_12 = _ema(df, window=12)
     ema_26 = _ema(df, window=26)
 
@@ -62,6 +78,10 @@ def _macd(df: pd.DataFrame) -> pd.Series:
 
 
 def _macd_signal(df: pd.DataFrame) -> pd.Series:
+    """
+    Calculate the MACD signal line using a 9-day EMA of the MACD.
+    """
+
     ema_12 = _ema(df, window=12)
     ema_26 = _ema(df, window=26)
 
@@ -69,6 +89,10 @@ def _macd_signal(df: pd.DataFrame) -> pd.Series:
 
 
 def _macd_histogram(df: pd.DataFrame) -> pd.Series:
+    """
+    Calculate the MACD histogram as the difference between the MACD and its signal line.
+    """
+
     macd = _macd(df)
     macd_signal = _macd_signal(df)
 
@@ -76,6 +100,10 @@ def _macd_histogram(df: pd.DataFrame) -> pd.Series:
 
 
 def _di(df: pd.DataFrame, wilder: int = 14) -> tuple[pd.Series, pd.Series]:
+    """
+    Calculate positive (+DI) and negative (-DI) directional indicators using Wilder's smoothing.
+    """
+
     high = df["high"]
     low = df["low"]
     close = df["close"]
@@ -100,12 +128,20 @@ def _di(df: pd.DataFrame, wilder: int = 14) -> tuple[pd.Series, pd.Series]:
 
 
 def _dmi(df: pd.DataFrame) -> pd.Series:
+    """
+    Calculate the Directional Movement Index (DMI) based on positive and negative directional indicators.
+    """
+
     plus_di, minus_di = _di(df)
 
     return 100 * abs(plus_di - minus_di) / abs(plus_di + minus_di)
 
 
 def _adx(df: pd.DataFrame, wilder: int = 14) -> pd.Series:
+    """
+    Calculate the Average Directional Index (ADX) by smoothing the DMI.
+    """
+
     dx = _dmi(df)
 
     return dx.ewm(alpha=1 / wilder, adjust=False).mean()
@@ -230,7 +266,12 @@ INDICATORS: dict[IndicatorName, IndicatorSpec] = {
     ),
 }
 
+
 def add_stock_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute all the stock indicators listed in the IndicatorName enum.
+    """
+
     df = df.copy()
 
     for name, spec in INDICATORS.items():
