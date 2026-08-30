@@ -1,6 +1,6 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Callable
 
 import pandas as pd
 
@@ -267,7 +267,7 @@ INDICATORS: dict[IndicatorName, IndicatorSpec] = {
 }
 
 
-def add_stock_indicators(df: pd.DataFrame) -> pd.DataFrame:
+def compute_stock_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
     Compute all the stock indicators listed in the IndicatorName enum.
     """

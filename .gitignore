@@ -221,4 +221,4 @@ __marimo__/
 data/nyse/
 data/nyse-parquet/
 data/yfinance*
-data/fsid/*
+data/fnspid/*
