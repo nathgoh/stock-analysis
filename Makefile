@@ -1,4 +1,4 @@
-.PHONY: help run up down stop restart logs ps status sql-client clean
+.PHONY: help run up down stop restart logs ps status clean
 
 # Docker compose command
 DOCKER_COMPOSE ?= docker compose
@@ -34,8 +34,7 @@ ps: ## Show status of running containers
 
 status: ps ## Alias for 'ps'
 
-sql-client: ## Open an interactive Flink SQL client session
-	$(DOCKER_COMPOSE) run --rm sql-client
+
 
 clean: ## Stop and remove containers along with volumes
 	$(DOCKER_COMPOSE) down -v
