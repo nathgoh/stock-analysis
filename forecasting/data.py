@@ -12,6 +12,26 @@ CACHE_METRICS_DATASET_DIR = Path("../data/fnspid/stock_features_dataset.parquet"
 
 STOCK_PRICE_COLUMNS = ["date", "volume", "open", "high", "low", "close", "adj close"]
 
+# Raw price levels differ by orders of magnitude between stocks,
+# so they are inputs to the indicators rather than features themselves.
+NON_FEATURE_COLUMNS = [
+    "symbol",
+    "date",
+    "volume",
+    "open",
+    "high",
+    "low",
+    "close",
+    "adj_close",
+    "adj_open",
+    "adj_high",
+    "adj_low",
+    # Exclude from the features, this is used to compute the labels, prevent leakage
+    "forward_return",  # Looks aheads, so we can't use it as a feature
+    "threshold",
+    "label",
+]
+
 
 def load_or_build_raw_stock_prices(force_build=False) -> pd.DataFrame:
     """
@@ -21,17 +41,28 @@ def load_or_build_raw_stock_prices(force_build=False) -> pd.DataFrame:
     if CACHE_RAW_STOCK_PRICES_DIR.exists() and not force_build:
         return pd.read_parquet(CACHE_RAW_STOCK_PRICES_DIR)
 
+    # Rescale open, high and low by the adjusted close value
     query = f"""
+        WITH raw AS (
+            SELECT
+                upper(regexp_extract(filename, '([^/]+)\\.csv$', 1)) AS symbol,
+                date::DATE AS date,
+                volume::BIGINT AS volume,
+                open::DOUBLE AS open,
+                high::DOUBLE AS high,
+                low::DOUBLE AS low,
+                close::DOUBLE AS close,
+                "adj close"::DOUBLE AS adj_close,
+            FROM read_csv('{RAW_STOCK_PRICES_DIR}', filename=True, union_by_name=true)
+        )
         SELECT
-            upper(regexp_extract(filename, '([^/]+)\\.csv$', 1)) AS symbol,
-            date::DATE AS date,
-            volume::BIGINT AS volume,
-            open::DOUBLE AS open,
-            high::DOUBLE AS high,
-            low::DOUBLE AS low,
-            close::DOUBLE AS close,
-            "adj close"::DOUBLE AS "adj_close",
-        FROM read_csv('{RAW_STOCK_PRICES_DIR}', filename=True)
+            *,
+            open * adj_close / nullif(close, 0) AS adj_open,
+            high * adj_close / nullif(close, 0) AS adj_high,
+            low * adj_close / nullif(close, 0) AS adj_low,
+        FROM raw
+        WHERE adj_close > 0 and close > 0
+        ORDER BY symbol, date
     """
     stock_prices_df = duckdb.execute(query).df()
 
@@ -70,17 +101,24 @@ def load_or_build_metrics_dataset(force_build=False):
 def label_stock(stock_df: pd.DataFrame, horizon: int = 7, k: float = 0.5):
     """
     Add labeling of either UP, DOWN, or HOLD depending on a threshold based on a
-    forward return (log) calculation.
+    forward return (log) calculation, measured on split adjusted closes.
 
-    i.e threshold = k * rolling standard deviation (std) * sqrt(horizon)
-    rolling std is a recent volatility of the stock (i.e ATR or rolling std of returns over n days).
+    Expects rows of a single ticker symbol, already sorted by date ascending.
+
+    i.e threshold = k * ewm_std * sqrt(horizon)
+    Where ewm_std is the exponentially weight moving standard deviation of the daily log
+    returns within a given 'span'.
     """
 
-    forward_return_log = np.log(stock_df["close"].shift(-horizon) / stock_df["close"])
+    forward_return_log = np.log(
+        stock_df["adj_close"].shift(-horizon) / stock_df["adj_close"]
+    )
     stock_df["forward_return"] = forward_return_log
 
-    rolling_std = stock_df["close"].pct_change().ewm(span=21, adjust=False).std()
-    stock_df["threshold"] = k * rolling_std * np.sqrt(horizon)
+    daily_log_return = np.log(stock_df["adj_close"] / stock_df["adj_close"].shift(1))
+
+    ewm_std = daily_log_return.ewm(span=21, adjust=False, min_periods=21).std()
+    stock_df["threshold"] = k * ewm_std * np.sqrt(horizon)
     stock_df = stock_df.dropna(subset=["forward_return", "threshold"]).reset_index(
         drop=True
     )
@@ -97,35 +135,45 @@ def label_stock(stock_df: pd.DataFrame, horizon: int = 7, k: float = 0.5):
     return stock_df
 
 
+def class_weights(labels: pd.Series) -> dict[str, float]:
+    """
+    Inverse frequency weights to have the signals (UP, DOWN, HOLD)
+    contribute more equally to the loss.
+    """
+
+    counts = labels.value_counts()
+
+    return (len(labels) / (len(counts) * counts)).to_dict()
+
+
 def build_split_datasets(
-    features_dataset: pd.DataFrame,
+    dataset: pd.DataFrame,
     train_split: float = 0.72,
     validation_split: float = 0.13,
     days_gap: int = 14,
 ):
     """
-    Build the training, validation, and testing datasets from the features dataset.
+    Build the training, validation, and testing datasets from the dataset.
     Split will be based on datetime.
 
     Have a set days gap at each boundary of the split dataset so the forward windows from each set label's
     don't overlap each other.
     """
 
-    unique_dates = np.sort(features_dataset["date"].unique())
+    unique_dates = np.sort(dataset["date"].unique())
     dataset_size = len(unique_dates)
     date_gap = pd.Timedelta(days=days_gap)
 
     train_end_date = unique_dates[int(dataset_size * train_split)]
     val_end_date = unique_dates[int(dataset_size * (train_split + validation_split))]
 
-    train_df = features_dataset[
-        features_dataset["date"] < train_end_date - date_gap
-    ].reset_index(drop=True)
-    validation_df = features_dataset[
-        features_dataset["date"] >= train_end_date & val_end_date - date_gap
-    ].reset_index(drop=True)
-    test_df = features_dataset[features_dataset["date"] >= val_end_date].reset_index(
+    train_df = dataset[dataset["date"] < train_end_date - date_gap].reset_index(
         drop=True
     )
+    validation_df = dataset[
+        (dataset["date"] >= train_end_date)
+        & (dataset["date"] < val_end_date - date_gap)
+    ].reset_index(drop=True)
+    test_df = dataset[dataset["date"] >= val_end_date].reset_index(drop=True)
 
     return train_df, validation_df, test_df
