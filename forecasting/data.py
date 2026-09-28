@@ -5,32 +5,19 @@ import numpy as np
 import pandas as pd
 
 from forecasting.indicators import compute_stock_indicators
+from forecasting.models import StockRating
 
-RAW_STOCK_PRICES_DIR = Path("../data/fnspid/stock_prices/*.csv")
-CACHE_RAW_STOCK_PRICES_DIR = Path("../data/fnspid/stock_prices.parquet")
-CACHE_METRICS_DATASET_DIR = Path("../data/fnspid/stock_features_dataset.parquet")
+FNSPID_DIR = Path(__file__).resolve().parent.parent / "data" / "fnspid"
+RAW_STOCK_PRICES_DIR = FNSPID_DIR / "stock_prices" / "*.csv"
+CACHE_RAW_STOCK_PRICES_DIR = FNSPID_DIR / "stock_prices.parquet"
+CACHE_METRICS_DATASET_DIR = FNSPID_DIR / "stock_features_dataset.parquet"
 
 STOCK_PRICE_COLUMNS = ["date", "volume", "open", "high", "low", "close", "adj close"]
 
-# Raw price levels differ by orders of magnitude between stocks,
-# so they are inputs to the indicators rather than features themselves.
-NON_FEATURE_COLUMNS = [
-    "symbol",
-    "date",
-    "volume",
-    "open",
-    "high",
-    "low",
-    "close",
-    "adj_close",
-    "adj_open",
-    "adj_high",
-    "adj_low",
-    # Exclude from the features, this is used to compute the labels, prevent leakage
-    "forward_return",  # Looks aheads, so we can't use it as a feature
-    "threshold",
-    "label",
-]
+# A label looks `horizon` rows ahead. Rows whose lookahead spans more calendar days
+# than this (missing price data) are dropped, and splits leave a gap this wide.
+MAX_HORIZON_SPAN_DAYS = 14
+LABEL_HORIZON = 7
 
 
 def load_or_build_raw_stock_prices(force_build=False) -> pd.DataFrame:
@@ -98,7 +85,7 @@ def load_or_build_metrics_dataset(force_build=False):
     return dataset_df
 
 
-def label_stock(stock_df: pd.DataFrame, horizon: int = 7, k: float = 0.5):
+def label_stock(stock_df: pd.DataFrame, horizon: int = LABEL_HORIZON, k: float = 0.5):
     """
     Add labeling of either UP, DOWN, or HOLD depending on a threshold based on a
     forward return (log) calculation, measured on split adjusted closes.
@@ -106,14 +93,32 @@ def label_stock(stock_df: pd.DataFrame, horizon: int = 7, k: float = 0.5):
     Expects rows of a single ticker symbol, already sorted by date ascending.
 
     i.e threshold = k * ewm_std * sqrt(horizon)
-    Where ewm_std is the exponentially weight moving standard deviation of the daily log
+    Where ewm_std is the exponentially weighted moving standard deviation of the daily log
     returns within a given 'span'.
+
+    Rows whose `horizon` rows ahead span more than MAX_HORIZON_SPAN_DAYS calendar days
+    are dropped, since missing price data means they are not a true `horizon`-day return.
     """
 
     forward_return_log = np.log(
         stock_df["adj_close"].shift(-horizon) / stock_df["adj_close"]
     )
     stock_df["forward_return"] = forward_return_log
+
+    span_days = (stock_df["date"].shift(-horizon) - stock_df["date"]).dt.days
+    stock_df.loc[span_days > MAX_HORIZON_SPAN_DAYS, "forward_return"] = np.nan
+
+    # Date when the forward window closes, used to avoid lookahead leakage
+    stock_df["label_end_date"] = stock_df["date"].shift(-horizon)
+
+    # Trailing horizon-day return for the baseline, we will mask if the span exceeds MAX_HORIZON_SPAN_DAYS
+    trailing_span_days = (stock_df["date"] - stock_df["date"].shift(horizon)).dt.days
+    trailing_return_log = np.log(
+        stock_df["adj_close"] / stock_df["adj_close"].shift(horizon)
+    )
+    stock_df["trailing_return"] = trailing_return_log.where(
+        trailing_span_days <= MAX_HORIZON_SPAN_DAYS
+    )
 
     daily_log_return = np.log(stock_df["adj_close"] / stock_df["adj_close"].shift(1))
 
@@ -128,8 +133,8 @@ def label_stock(stock_df: pd.DataFrame, horizon: int = 7, k: float = 0.5):
             stock_df["forward_return"] > stock_df["threshold"],
             stock_df["forward_return"] < -stock_df["threshold"],
         ],
-        choicelist=["UP", "DOWN"],
-        default="HOLD",
+        choicelist=[StockRating.UP, StockRating.DOWN],
+        default=StockRating.HOLD,
     )
 
     return stock_df
@@ -150,11 +155,15 @@ def build_split_datasets(
     dataset: pd.DataFrame,
     train_split: float = 0.72,
     validation_split: float = 0.13,
-    days_gap: int = 14,
+    days_gap: int = MAX_HORIZON_SPAN_DAYS,
 ):
     """
-    Build the training, validation, and testing datasets from the dataset.
+    Split the full metrics dataset (output of `load_or_build_metrics_dataset`, still
+    containing `date` and `label`) into training, validation, and testing datasets.
     Split will be based on datetime.
+
+    Split first, then call `compute_model_features` on each split, since that
+    function drops `date`.
 
     Have a set days gap at each boundary of the split dataset so the forward windows from each set label's
     don't overlap each other.

@@ -1,6 +1,30 @@
 import pandas as pd
 
-from forecasting.data import NON_FEATURE_COLUMNS, load_or_build_metrics_dataset
+from forecasting.data import load_or_build_metrics_dataset
+
+# Raw price levels differ by orders of magnitude between stocks,
+# so they are inputs to the indicators rather than features themselves.
+NON_FEATURE_COLUMNS = [
+    "symbol",
+    "date",
+    "volume",
+    "open",
+    "high",
+    "low",
+    "close",
+    "adj_close",
+    "adj_open",
+    "adj_high",
+    "adj_low",
+    # Used to compute the labels, so excluded to prevent leakage.
+    # forward_return looks ahead, so it can't be a feature.
+    "forward_return",
+    "threshold",
+    "label",
+    # label_end_date and trailing_return only feed the evaluation baselines.
+    "label_end_date",
+    "trailing_return",
+]
 
 
 def compute_model_features(
