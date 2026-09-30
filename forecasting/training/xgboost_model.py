@@ -1,11 +1,10 @@
-from pyspark.pandas.correlation import compute
+from pathlib import Path
+
 import numpy as np
-import cupy as cp
 import pandas as pd
 import xgboost as xgb
-import optuna
 
-from sklearn.metrics import classification_report, confusion_matrix, f1_score, log_loss
+from sklearn.metrics import f1_score, log_loss
 
 from forecasting.data import (
     build_split_datasets,
@@ -15,6 +14,16 @@ from forecasting.data import (
 from forecasting.features import compute_model_features
 from forecasting.models import StockRating
 
+ARTIFACTS_DIR = Path(__file__).resolve().parent.parent / "data" / "artifacts" / "xgboost"
+
+BASE_PARAMS = {
+    "objective": "multi:softprob",
+    "num_class": len(StockRating),
+    "eval_metric": "mlogloss",
+    "n_estimators": 2000,
+    "device": "cuda",
+    "random_state": 0,
+}
 
 def prepare_model_features(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     features, labels = compute_model_features(df)
@@ -32,11 +41,11 @@ def fit_xgboost(
 ) -> xgb.XGBClassifier:
     weights = class_weights(y_train)
 
-    model = xgb.XGBClassifier(**params)
+    model = xgb.XGBClassifier(**{**BASE_PARAMS, **params})
     model.fit(
         X_train,
         y_train,
-        sample_weight=y_train.map(weights).to_numpy,
+        sample_weight=y_train.map(weights).to_numpy(),
         eval_set=[(X_val, y_val)],
         sample_weight_eval_set=[y_val.map(weights).to_numpy()],
         verbose=verbose,
@@ -102,7 +111,7 @@ def evaluate_model(
             ):
                 row[f"{rating.value} F1"] = score
         if y_proba is not None:
-            row["log loss"] = log_loss(y_val, y_proba, labels=labels)
+            row["log loss"] = log_loss(y_eval, y_proba, labels=labels)
         results[name] = row
     print(
         pd.DataFrame.from_dict(results, orient="index").to_string(
@@ -172,17 +181,11 @@ if __name__ == "__main__":
     X_val, y_val = prepare_model_features(val_df)
 
     params = {
-        "objective": "multi:softprob",
-        "num_class": len(StockRating),
-        "eval_metric": "mlogloss",
-        "n_estimators": 1000,
         "early_stopping_rounds": 50,
-        "random_state": 0,
         "learning_rate": 0.05,
         "min_child_weight": 50,
         "subsample": 0.7,
         "colsample_bytree": 0.7,
-        "device": "cuda",
     }
 
     model = fit_xgboost(X_train, y_train, X_val, y_val, params, verbose=25)
