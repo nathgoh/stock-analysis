@@ -18,6 +18,9 @@ dependencies = [
 [dependency-groups]
 forecasting = [
     "scikit-learn>=1.9.0",
+    "xgboost>=3.4.1",
+    "optuna>=5.0.0",
+    "cupy-cuda13x>=14.2.0",
 ]
 misc = [
     "pyspark>=4.1.2",
