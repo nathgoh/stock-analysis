@@ -14,7 +14,7 @@ from forecasting.data import (
 from forecasting.features import compute_model_features
 from forecasting.models import StockRating
 
-ARTIFACTS_DIR = Path(__file__).resolve().parent.parent / "data" / "artifacts" / "xgboost"
+ARTIFACTS_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "artifacts"
 
 BASE_PARAMS = {
     "objective": "multi:softprob",
@@ -24,6 +24,7 @@ BASE_PARAMS = {
     "device": "cuda",
     "random_state": 0,
 }
+
 
 def prepare_model_features(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     features, labels = compute_model_features(df)
@@ -105,7 +106,7 @@ def evaluate_model(
             ["macro F1", *(f"{r.value} F1" for r in StockRating), "log loss"]
         )
         if y_pred is not None:
-            row["macro_f1"] = f1_score(y_eval, y_pred, average="macro")
+            row["macro F1"] = f1_score(y_eval, y_pred, average="macro")
             for rating, score in zip(
                 StockRating, f1_score(y_eval, y_pred, average=None, labels=labels)
             ):
@@ -113,6 +114,7 @@ def evaluate_model(
         if y_proba is not None:
             row["log loss"] = log_loss(y_eval, y_proba, labels=labels)
         results[name] = row
+
     print(
         pd.DataFrame.from_dict(results, orient="index").to_string(
             na_rep="-", float_format="{:.4f}".format
@@ -120,12 +122,23 @@ def evaluate_model(
     )
 
 
+def save_model(
+    model: xgb.XGBClassifier, directory: Path = ARTIFACTS_DIR
+) -> None:
+    """
+    Save the model information
+    """
+
+    directory.mkdir(parents=True, exist_ok=True)
+    model.save_model(directory / "xgboost_model.ubj")
+
+
 def predict_proba(model: xgb.XGBClassifier, X: pd.DataFrame) -> np.ndarray:
     """
     Get the class probabilities.
     """
 
-    return model.get_booster().predict(xgb.DMatrix(X))
+    return model.predict_proba(xgb.DMatrix(X))
 
 
 def apply_class_scale(proba: np.ndarray, class_scale: np.ndarray) -> np.ndarray:

@@ -1,3 +1,4 @@
+from rich.pretty import data
 from pathlib import Path
 
 import duckdb
@@ -149,6 +150,71 @@ def class_weights(labels: pd.Series) -> dict[str, float]:
     counts = labels.value_counts()
 
     return (len(labels) / (len(counts) * counts)).to_dict()
+
+
+def sample_stock_symbols(
+    dataset: pd.DataFrame, fraction: float, seed: int = 0
+) -> pd.DataFrame:
+    """
+    Sample a seeded subset of stock symbols, keep all the time series data of one stock symbol together.
+    """
+
+    symbols = np.sort(dataset["symbol"].unique())
+    n_keep = max(1, round(len(symbols) * fraction))
+    keep_symbols = np.random.default_rng(seed).choice(
+        symbols, size=n_keep, replace=False
+    )
+
+    return dataset[dataset["symbol"].isin(keep_symbols)].reset_index(drop=True)
+
+
+def walk_forward_splits(
+    dataset: pd.DataFrame,
+    n_folds: int,
+    initial_train_fraction: float = 0.5,
+    train_split: float = 0.72,
+    validation_split: float = 0.13,
+    days_gap: int = MAX_HORIZON_SPAN_DAYS,
+):
+    """
+    To be used in walk forward validation, rolling window approach where the model is trained and
+    tested on consecutive periods. Allows the model to be updated continuously,
+    closely simulating real-world forecasting scenarios.
+
+    We will fold over the period everything before the test set, get an initial fraction as our training
+    set, the the rest if divided cross n_folds consecutive validation blocks. Each fold then trains on
+    all the dates before its block (excluding days_gap), prevent leakage into validation set.
+    """
+
+    unique_dates = np.sort(dataset["date"].unique())
+    date_gap = pd.Timedelta(days=days_gap)
+
+    test_start = unique_dates[int(len(unique_dates) * (train_split + validation_split))]
+    validation_dates = unique_dates[unique_dates < test_start - date_gap]
+
+    # n_folds + 1 spacing
+    # i.e. 1000 validations dates, initial_train_fraction=0.5
+    # dates 0 - 500 (train) 500 - 625 (val 0) ... 875 - 1000 (val 3)
+    spaces = np.linspace(
+        int(len(validation_dates) * initial_train_fraction),
+        len(validation_dates),
+        n_folds + 1,
+    ).astype(int)
+
+    folds = []
+    for start, end in zip(spaces[:-1], spaces[1:]):
+        val_start = validation_dates[start]
+
+        in_val = dataset["date"] >= val_start
+        # boolean mask, keep a row True only if was already True in_val and
+        # its date is on or vefore validateion_dates[end - 1]
+        in_val &= dataset["date"] <= validation_dates[end - 1]
+        train_df = dataset[dataset["date"] < val_start - date_gap]
+        folds.append(
+            (train_df.reset_index(drop=True), dataset[in_val].reset_index(drop=True))
+        )
+
+    return folds
 
 
 def build_split_datasets(
