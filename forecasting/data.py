@@ -1,4 +1,3 @@
-from rich.pretty import data
 from pathlib import Path
 
 import duckdb
@@ -175,6 +174,7 @@ def walk_forward_splits(
     train_split: float = 0.72,
     validation_split: float = 0.13,
     days_gap: int = MAX_HORIZON_SPAN_DAYS,
+    boundary_dates: np.ndarray | None = None,
 ):
     """
     To be used in walk forward validation, rolling window approach where the model is trained and
@@ -184,9 +184,15 @@ def walk_forward_splits(
     We will fold over the period everything before the test set, get an initial fraction as our training
     set, the the rest if divided cross n_folds consecutive validation blocks. Each fold then trains on
     all the dates before its block (excluding days_gap), prevent leakage into validation set.
+
+    The fold boundaries come from the dates of `dataset`, or from `boundary_dates` when
+    given. Pass the full dataset's dates when `dataset` is a symbol subset, so the
+    boundaries (and the test cut) match the ones from `build_split_datasets`.
     """
 
-    unique_dates = np.sort(dataset["date"].unique())
+    if boundary_dates is None:
+        boundary_dates = dataset["date"].unique()
+    unique_dates = np.sort(boundary_dates)
     date_gap = pd.Timedelta(days=days_gap)
 
     test_start = unique_dates[int(len(unique_dates) * (train_split + validation_split))]

@@ -23,6 +23,7 @@ BASE_PARAMS = {
     "n_estimators": 2000,
     "device": "cuda",
     "random_state": 0,
+    "early_stopping_rounds": 100
 }
 
 
@@ -138,7 +139,11 @@ def predict_proba(model: xgb.XGBClassifier, X: pd.DataFrame) -> np.ndarray:
     Get the class probabilities.
     """
 
-    return model.predict_proba(xgb.DMatrix(X))
+    # Cap it at the best iteration
+    best_iteration = getattr(model, "best_iteration", None)
+    iteration_range = (0, best_iteration + 1) if best_iteration is not None else (0, 0)
+
+    return model.get_booster().predict(xgb.DMatrix(X), iteration_range=iteration_range)
 
 
 def apply_class_scale(proba: np.ndarray, class_scale: np.ndarray) -> np.ndarray:
