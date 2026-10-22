@@ -9,6 +9,7 @@ from forecasting.data import (
     build_split_datasets,
     load_or_build_metrics_dataset,
     sample_stock_symbols,
+    split_date_ranges,
     walk_forward_splits,
 )
 from forecasting.training.xgboost_model import (
@@ -78,7 +79,7 @@ def run_trials(artifacts_dir: Path, n_trials: int = 50):
         params = build_params(trial)
         fit_params = {
             **params,
-            "min_child_weight": params["min_child_weight"] * SEARCH_SYMBOL_FRACTION
+            "min_child_weight": params["min_child_weight"] * SEARCH_SYMBOL_FRACTION,
         }
         losses = []
         f1_scores = []
@@ -182,7 +183,13 @@ def run_trials(artifacts_dir: Path, n_trials: int = 50):
     print(f"Best parameters: {best_params}")
 
     evaluate_model(best_model, test_df, y_train)
-    save_model(best_model)
+    save_model(
+        best_model,
+        metadata={
+            "splits": split_date_ranges(train=train_df, val=val_df, test=test_df),
+            "search_config": search_config,
+        },
+    )
 
 
 if __name__ == "__main__":

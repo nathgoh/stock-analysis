@@ -38,3 +38,16 @@ class IndicatorName(StrEnum):
     INTRADAY_RANGE = "intraday_range"
     GAP = "gap"
     RELATIVE_VOLUME_21D = "relative_volume_21d"
+
+
+class MarketIndicatorName(StrEnum):
+    """
+    Cross-sectional indicators, comparing a stock against every symbol on the same date.
+    """
+
+    MARKET_RETURN_1D = "market_return_1d"
+    MARKET_RETURN_5D = "market_return_5d"
+    EXCESS_RETURN_1D = "excess_return_1d"
+    EXCESS_RETURN_5D = "excess_return_5d"
+    MOMENTUM_14D_RANK = "momentum_14d_rank"
+    RELATIVE_VOLUME_21D_RANK = "relative_volume_21d_rank"

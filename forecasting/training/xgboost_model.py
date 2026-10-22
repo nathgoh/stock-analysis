@@ -1,9 +1,9 @@
+import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-
 from sklearn.metrics import f1_score, log_loss
 
 from forecasting.data import (
@@ -23,7 +23,7 @@ BASE_PARAMS = {
     "n_estimators": 2000,
     "device": "cuda",
     "random_state": 0,
-    "early_stopping_rounds": 100
+    "early_stopping_rounds": 100,
 }
 
 
@@ -124,14 +124,26 @@ def evaluate_model(
 
 
 def save_model(
-    model: xgb.XGBClassifier, directory: Path = ARTIFACTS_DIR
+    model: xgb.XGBClassifier,
+    metadata: dict | None = None,
+    directory: Path = ARTIFACTS_DIR,
 ) -> None:
     """
-    Save the model information
+    Save the model, plus a JSON file with its feature columns, parameters and any extra
+    `metadata` (e.g. split dates) needed to reproduce its evaluation.
     """
 
     directory.mkdir(parents=True, exist_ok=True)
     model.save_model(directory / "xgboost_model.ubj")
+
+    info = {
+        "feature_columns": model.get_booster().feature_names,
+        "best_iteration": getattr(model, "best_iteration", None),
+        "params": model.get_params(),
+        **(metadata or {}),
+    }
+    with open(directory / "xgboost_model.json", "w") as f:
+        json.dump(info, f, indent=2, default=str)
 
 
 def predict_proba(model: xgb.XGBClassifier, X: pd.DataFrame) -> np.ndarray:

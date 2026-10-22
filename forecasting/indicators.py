@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from forecasting.models import IndicatorName
+from forecasting.models import IndicatorName, MarketIndicatorName
 
 ADJ_OPEN = "adj_open"
 ADJ_HIGH = "adj_high"
@@ -306,5 +306,41 @@ def compute_stock_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     for name, spec in INDICATORS.items():
         df[name] = spec.func(df)
+
+    return df
+
+
+def compute_market_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute the cross-sectional indicators listed in the MarketIndicatorName enum, which
+    compare each stock to every other symbol on the same date.
+
+    Expects the per-symbol indicators to already be computed for all symbols. The market
+    return is the median across symbols rather than the mean, since the equal-weighted
+    mean is dominated by a handful of penny stocks with extreme moves.
+    """
+
+    by_date = df.groupby("date")
+
+    for market, stock in [
+        (MarketIndicatorName.MARKET_RETURN_1D, IndicatorName.RETURN_1D),
+        (MarketIndicatorName.MARKET_RETURN_5D, IndicatorName.RETURN_5D),
+    ]:
+        df[market] = by_date[stock].transform("median")
+
+    df[MarketIndicatorName.EXCESS_RETURN_1D] = (
+        df[IndicatorName.RETURN_1D] - df[MarketIndicatorName.MARKET_RETURN_1D]
+    )
+    df[MarketIndicatorName.EXCESS_RETURN_5D] = (
+        df[IndicatorName.RETURN_5D] - df[MarketIndicatorName.MARKET_RETURN_5D]
+    )
+
+    # Percentile rank within the date, 1 = highest of all symbols that day.
+    df[MarketIndicatorName.MOMENTUM_14D_RANK] = by_date[
+        IndicatorName.MOMENTUM_14D
+    ].rank(pct=True)
+    df[MarketIndicatorName.RELATIVE_VOLUME_21D_RANK] = by_date[
+        IndicatorName.RELATIVE_VOLUME_21D
+    ].rank(pct=True)
 
     return df
