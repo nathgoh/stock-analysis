@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from forecasting.indicators import compute_market_indicators, compute_stock_indicators
-from forecasting.models import StockRating
+from forecasting.models import IndicatorName, MarketIndicatorName, StockRating
 
 FNSPID_DIR = Path(__file__).resolve().parent.parent / "data" / "fnspid"
 RAW_STOCK_PRICES_DIR = FNSPID_DIR / "stock_prices" / "*.csv"
@@ -19,6 +19,19 @@ STOCK_PRICE_COLUMNS = ["date", "volume", "open", "high", "low", "close", "adj cl
 # splits leave a gap this wide.
 MAX_HORIZON_SPAN_DAYS = 14
 LABEL_HORIZON = 7
+
+# First date used for training and evaluation. FNSPID news covers ~70%+ of the symbols
+# from 2010 on (see `forecasting.news.profile_news`), so the price-only baseline and the
+# news experiments are run on the same rows. The cached dataset keeps the full history,
+# so indicators of early 2010 rows still look back into 2009.
+START_DATE = "2010-01-01"
+
+# A day whose close, or open, is more than this above the previous close (+100%) is
+# treated as a bad price in the FNSPID data. Rows whose indicator windows (up to
+# BAD_PRICE_LOOKBACK_ROWS rows back, the longest return / volatility window) or label
+# window include such a day are dropped.
+MAX_DAILY_MOVE = 1.0
+BAD_PRICE_LOOKBACK_ROWS = 60
 
 
 def copy_to_parquet(con: duckdb.DuckDBPyConnection, query: str, path: Path) -> None:
@@ -70,13 +83,15 @@ def load_or_build_raw_stock_prices(force_build=False) -> pd.DataFrame:
     return pd.read_parquet(CACHE_RAW_STOCK_PRICES_DIR)
 
 
-def load_or_build_metrics_dataset(force_build=False, start_date: str | None = None):
+def load_or_build_metrics_dataset(
+    force_build=False, start_date: str | None = START_DATE
+):
     """
     Build the metrics based on the raw stock prices, see `build_metrics_dataset`.
 
     Save the resulting dataset as a parquet file so we don't need to keep rebuilding it
     unless we choose to. The cache always holds the full history, `start_date` only
-    filters which rows are returned.
+    filters which rows are returned (pass None for the full history).
     """
 
     if CACHE_METRICS_DATASET_DIR.exists() and not force_build:
@@ -100,29 +115,73 @@ def load_or_build_metrics_dataset(force_build=False, start_date: str | None = No
 
 def build_metrics_dataset(stock_prices_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Compute the indicators per ticker symbol, then the cross-sectional market indicators,
-    then the labels per ticker symbol.
+    Compute the indicators and labels per ticker symbol, then the cross-sectional market
+    indicators across all symbols.
 
-    The market indicators are computed before labeling, so the rows labeling drops (no
-    complete forward window) still count towards that date's market.
+    Rows without a label (no complete forward window) and rows near a bad price (see
+    `flag_bad_prices`) are only dropped at the end, so they still count towards that
+    date's market indicators.
+
+    The full dataset barely fits in memory, so it is built in a single pass over the
+    symbols and the indicator columns are stored as float32, which is what the model
+    trains on anyway. Prices, returns and label columns stay float64.
     """
 
-    stocks = [
-        compute_stock_indicators(group)
-        for _, group in stock_prices_df.groupby("symbol", sort=False)
-    ]
+    stocks = []
+    for _, group in stock_prices_df.groupby("symbol", sort=False):
+        group = label_stock(compute_stock_indicators(group))
+        group["near_bad_price"] = flag_bad_prices(group)
+        stocks.append(_to_float32(group, list(IndicatorName)))
+    del stock_prices_df
+
     dataset_df = pd.concat(stocks, ignore_index=True)
     del stocks
 
     dataset_df = compute_market_indicators(dataset_df)
+    dataset_df = _to_float32(dataset_df, list(MarketIndicatorName))
 
-    stocks = [
-        label_stock(group) for _, group in dataset_df.groupby("symbol", sort=False)
-    ]
-    dataset_df = pd.concat(stocks, ignore_index=True)
-    del stocks
+    keep = ~dataset_df.pop("near_bad_price") & dataset_df.notna().all(axis=1)
 
-    return dataset_df.dropna(subset=dataset_df.columns).reset_index(drop=True)
+    return dataset_df[keep].reset_index(drop=True)
+
+
+def flag_bad_prices(
+    stock_df: pd.DataFrame,
+    max_daily_move: float = MAX_DAILY_MOVE,
+    lookback_rows: int = BAD_PRICE_LOOKBACK_ROWS,
+    horizon: int = LABEL_HORIZON,
+) -> pd.Series:
+    """
+    Flag the rows affected by a bad price, a day whose close or open is more than
+    `max_daily_move` above the previous close.
+
+    A bad day affects the indicators of the `lookback_rows` rows after it, and the
+    labels of the `horizon + 1` rows before it (they enter or exit at its open).
+
+    Expects rows of a single ticker symbol, already sorted by date ascending.
+    """
+
+    previous_close = stock_df["adj_close"].shift(1)
+    bad_day = (
+        (stock_df["adj_close"] / previous_close - 1 > max_daily_move)
+        | (stock_df["adj_open"] / previous_close - 1 > max_daily_move)
+    ).astype(int)
+
+    # A bad day in this row or the `lookback_rows` rows before it.
+    in_lookback = bad_day.rolling(lookback_rows + 1, min_periods=1).max()
+    # A bad day in this row or the `horizon + 1` rows after it.
+    in_label_window = bad_day[::-1].rolling(horizon + 2, min_periods=1).max()[::-1]
+
+    return (in_lookback + in_label_window) > 0
+
+
+def _to_float32(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    """
+    Cast the float64 columns among `columns` to float32, leaving other dtypes (e.g. the
+    boolean cross indicators) as they are.
+    """
+
+    return df.astype({c: "float32" for c in columns if df[c].dtype == "float64"})
 
 
 def label_stock(stock_df: pd.DataFrame, horizon: int = LABEL_HORIZON, k: float = 0.5):
@@ -141,8 +200,11 @@ def label_stock(stock_df: pd.DataFrame, horizon: int = LABEL_HORIZON, k: float =
     returns within a given 'span'.
 
     Rows whose exit is more than MAX_HORIZON_SPAN_DAYS calendar days after the row's
-    date are dropped, since missing price data means they are not a true `horizon`-day
-    return. So are rows whose entry or exit open is missing (non-positive in old data).
+    date get no label, since missing price data means they are not a true `horizon`-day
+    return. Neither do rows whose entry or exit open is missing (non-positive in old
+    data), nor the last rows without a full forward window. Unlabeled rows are kept with
+    a NaN label so they still count towards the market indicators, `build_metrics_dataset`
+    drops them.
     """
 
     adj_open = stock_df["adj_open"].where(stock_df["adj_open"] > 0)
@@ -169,11 +231,8 @@ def label_stock(stock_df: pd.DataFrame, horizon: int = LABEL_HORIZON, k: float =
 
     ewm_std = daily_log_return.ewm(span=21, adjust=False, min_periods=21).std()
     stock_df["threshold"] = k * ewm_std * np.sqrt(horizon)
-    stock_df = stock_df.dropna(subset=["forward_return", "threshold"]).reset_index(
-        drop=True
-    )
 
-    stock_df["label"] = np.select(
+    label = np.select(
         condlist=[
             stock_df["forward_return"] > stock_df["threshold"],
             stock_df["forward_return"] < -stock_df["threshold"],
@@ -181,6 +240,8 @@ def label_stock(stock_df: pd.DataFrame, horizon: int = LABEL_HORIZON, k: float =
         choicelist=[StockRating.UP, StockRating.DOWN],
         default=StockRating.HOLD,
     )
+    has_label = stock_df["forward_return"].notna() & stock_df["threshold"].notna()
+    stock_df["label"] = pd.Series(label, index=stock_df.index).where(has_label)
 
     return stock_df
 

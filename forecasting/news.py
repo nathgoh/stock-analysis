@@ -19,8 +19,8 @@ def build_raw_news(force_build=False) -> Path:
 
     The CSV is ~23GB, so the result is written straight to parquet instead of going
     through pandas. Article bodies span many lines so that will cause issues with
-    DuckDB's parallel CSV reader (it can start a chunk inside a quoted field), 
-    so the file is read on a single thread. Rows that still fail to 
+    DuckDB's parallel CSV reader (it can start a chunk inside a quoted field),
+    so the file is read on a single thread. Rows that still fail to
     parse are saved to NEWS_REJECTS_DIR.
     """
 

@@ -7,6 +7,7 @@ import xgboost as xgb
 from sklearn.metrics import f1_score, log_loss
 
 from forecasting.data import (
+    START_DATE,
     build_split_datasets,
     class_weights,
     load_or_build_metrics_dataset,
@@ -204,7 +205,7 @@ def trailing_return_label(df: pd.DataFrame) -> pd.Series:
 
 
 if __name__ == "__main__":
-    dataset = load_or_build_metrics_dataset()
+    dataset = load_or_build_metrics_dataset(start_date=START_DATE)
     train_df, val_df, test_df = build_split_datasets(dataset)
 
     X_train, y_train = prepare_model_features(train_df)

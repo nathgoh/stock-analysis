@@ -6,6 +6,7 @@ from optuna.trial import FrozenTrial
 from sklearn.metrics import f1_score
 
 from forecasting.data import (
+    START_DATE,
     build_split_datasets,
     load_or_build_metrics_dataset,
     sample_stock_symbols,
@@ -29,6 +30,9 @@ SEARCH_SEED = 0
 N_FOLDS = 5
 # Pareto trials re-checked on the full data before one is picked.
 FINAL_CANDIDATES = 3
+# Trials from the old close-to-close labels / full-history study are not comparable,
+# so this study starts fresh. Use a new name whenever the dataset changes.
+STUDY_NAME = "xgboost-2010-open-to-open"
 
 
 def build_params(trial: optuna.Trial) -> dict:
@@ -56,7 +60,7 @@ def run_trials(artifacts_dir: Path, n_trials: int = 50):
 
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-    dataset = load_or_build_metrics_dataset()
+    dataset = load_or_build_metrics_dataset(start_date=START_DATE)
     train_df, val_df, test_df = build_split_datasets(dataset)
     search_dataset = sample_stock_symbols(
         dataset, SEARCH_SYMBOL_FRACTION, seed=SEARCH_SEED
@@ -118,7 +122,7 @@ def run_trials(artifacts_dir: Path, n_trials: int = 50):
     # Trials from a different fraction, seed or fold count are not comparable, so a
     # resumed study must have been created with the same search settings.
     study = optuna.create_study(
-        study_name="xgboost-tuning",
+        study_name=STUDY_NAME,
         storage=f"sqlite:///{artifacts_dir / 'optuna_study.db'}",
         load_if_exists=True,
         directions=["minimize", "maximize"],
@@ -128,6 +132,7 @@ def run_trials(artifacts_dir: Path, n_trials: int = 50):
         "fraction": SEARCH_SYMBOL_FRACTION,
         "seed": SEARCH_SEED,
         "n_folds": N_FOLDS,
+        "start_date": START_DATE,
     }
     stored_config = study.user_attrs.get("search_config")
     if stored_config is None:
@@ -186,6 +191,8 @@ def run_trials(artifacts_dir: Path, n_trials: int = 50):
     save_model(
         best_model,
         metadata={
+            "study_name": STUDY_NAME,
+            "start_date": START_DATE,
             "splits": split_date_ranges(train=train_df, val=val_df, test=test_df),
             "search_config": search_config,
         },
