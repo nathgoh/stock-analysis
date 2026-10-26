@@ -12,7 +12,7 @@ A personal data-processing playground with two real components plus scratch work
 
 ## Commands
 
-Python 3.13, managed with `uv`. Dependencies are split into groups in `pyproject.toml` (`forecasting`, `misc`, `news-service`); the base set has only duckdb/pandas/pyarrow/pydantic. Use `uv sync --group forecasting` (etc.) to install the group you need.
+Python 3.13, managed with `uv`. Dependencies are split into groups in `pyproject.toml` (`forecasting`, `misc`, `news-features`, `news-service`); the base set has only duckdb/pandas/pyarrow/pydantic. Use `uv sync --group forecasting` (etc.) to install the group you need.
 
 ```bash
 uv run ruff check .          # lint (ruff and ty are base dependencies)
@@ -22,6 +22,8 @@ uv run ty check              # type check
 # Forecasting (run as modules from repo root — imports are absolute, e.g. `forecasting.data`)
 uv run python -m forecasting.training.xgboost_model   # train once with hand-picked params, print test comparison
 uv run python -m forecasting.training.tuning          # Optuna search -> refit -> evaluate -> save model
+uv run python -m forecasting.news                     # parse + clean FNSPID news, print coverage stats
+uv run --group news-features python -m forecasting.sentiment   # FinBERT headline + summary scores (~35 min on GPU, resumable)
 
 # News service
 make up                      # start Redpanda (2 brokers) + console via docker compose
@@ -44,6 +46,8 @@ Data flow: raw CSVs → cached parquet → per-symbol indicators + labels → ti
 - **Leakage control is central.** Splits are chronological by *date* (not by row or symbol), with a `days_gap` (14 days) at each boundary so forward label windows don't overlap. `build_split_datasets` gives train/val/test (72/13/15); `walk_forward_splits` carves expanding-window folds out of the pre-test region. When searching on a symbol subset, pass `boundary_dates=dataset["date"].unique()` so fold and test boundaries match the full dataset. `tuning.py` asserts the no-overlap invariants — keep them if you change splitting.
 - **`training/xgboost_model.py`** — `fit_xgboost` applies inverse-frequency class weights to train *and* eval sets; `BASE_PARAMS` targets GPU (`device: cuda`, with `cupy-cuda13x` in the group), so training needs a CUDA GPU or a changed `device`. `predict_proba` caps prediction at the best iteration. `evaluate_model` compares against baselines (majority class, persistence via `resolved_label_lag`, trailing-return momentum, class prior) on the test rows where a persistence label is available. Model is saved to `data/artifacts/xgboost_model.ubj`.
 - **`training/tuning.py`** — multi-objective Optuna (minimize log loss, maximize macro F1) with walk-forward CV on a 30% symbol sample, stored in SQLite at `data/artifacts/optuna_study.db` under `STUDY_NAME` with `load_if_exists=True`, so runs resume. A resumed study must use the same `SEARCH_SYMBOL_FRACTION`/`SEARCH_SEED`/`N_FOLDS`/`START_DATE` (enforced via `search_config` user attr) — change `STUDY_NAME` whenever these or the dataset (labels, features, filtering) change. The old `xgboost-tuning` study in the same DB is from the close-to-close, full-history dataset and is not comparable. `min_child_weight` is scaled by the symbol fraction only inside the objective; the top Pareto trials are then refit on all symbols and picked by validation macro F1.
+
+- **News** — `news.py` parses the 23 GB FNSPID news CSV (single-threaded DuckDB read, multi-line quoted fields) into `news_raw.parquet`, then cleans and dedupes it into `news.parquet` (symbol, `published_at` UTC, title, url, LSA summary). `sentiment.py` scores each *distinct text* of a news column with FinBERT (`ProsusAI/finbert`, fp16 on GPU), one cache per column in `SENTIMENT_CACHES`: headlines into `news_sentiment.parquet` (join on `title`) and LSA summaries of the article bodies into `news_summary_sentiment.parquet` (join on `lsa_summary`), each with `p_positive`/`p_negative`/`p_neutral` and `sentiment = p_positive - p_negative`. Article bodies (and so summaries) exist for only ~10–40% of articles before 2021 and all of them from 2021 on, so summary features are far denser in val/test than in train — keep them NaN where missing and don't add a has-summary flag. Scoring writes chunks to `<cache stem>_chunks/` so an interrupted run resumes; they are merged and removed at the end. It needs the `news-features` group (torch, transformers), which the rest of `forecasting/` does not import.
 
 `data/` is untracked (large datasets, parquet caches, Optuna DB, model artifacts), as is `.env`.
 
