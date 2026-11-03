@@ -62,15 +62,24 @@ def evaluate_model(
     test_df: pd.DataFrame,
     y_train: pd.Series,
     class_scale: np.ndarray | None = None,
-):
+    X_test: pd.DataFrame | None = None,
+    show: bool = True,
+) -> dict[str, dict]:
     """
-    Score the model on the test set and compare against the naive baselines.
+    Score the model on the test set and compare against the naive baselines. Returns
+    the scores per model, and prints them if `show`.
+
+    The model's features come from `prepare_model_features(test_df)`, unless `X_test`
+    is given (e.g. a model trained on a subset of the feature columns).
     """
 
     stock_ratings = StockRating.to_index_map()
     labels = list(stock_ratings.values())
 
-    X_test, y_test = prepare_model_features(test_df)
+    if X_test is None:
+        X_test, y_test = prepare_model_features(test_df)
+    else:
+        y_test = test_df["label"].map(stock_ratings)
     test_proba = predict_proba(model, X_test)
 
     # Benchmark against persistence baseline, which only scores dates where a prior
@@ -99,9 +108,6 @@ def evaluate_model(
     if class_scale is not None:
         predictions["XGBoost (Scaled)"] = (apply_class_scale(proba, class_scale), None)
 
-    header = "".join(f"{r.value + ' F1':>10}" for r in StockRating)
-    print(f"{'':<18}{'macro F1':>10}{header}{'log loss':>10}")
-
     results = {}
     for name, (y_pred, y_proba) in predictions.items():
         row = dict.fromkeys(
@@ -117,11 +123,14 @@ def evaluate_model(
             row["log loss"] = log_loss(y_eval, y_proba, labels=labels)
         results[name] = row
 
-    print(
-        pd.DataFrame.from_dict(results, orient="index").to_string(
-            na_rep="-", float_format="{:.4f}".format
+    if show:
+        print(
+            pd.DataFrame.from_dict(results, orient="index").to_string(
+                na_rep="-", float_format="{:.4f}".format
+            )
         )
-    )
+
+    return results
 
 
 def save_model(

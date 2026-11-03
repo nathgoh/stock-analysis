@@ -8,16 +8,10 @@ import pandas as pd
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-from forecasting.data import FNSPID_DIR, copy_to_parquet
-from forecasting.news import CACHE_NEWS_DIR, load_or_build_news
+from forecasting.data import copy_to_parquet
+from forecasting.news import CACHE_NEWS_DIR, SENTIMENT_CACHES, load_or_build_news
 
 FINBERT_MODEL = "ProsusAI/finbert"
-# Cached scores per news text column: headlines, and the LSA summaries of the article
-# bodies (which only exist for some articles before 2021, and all of them after).
-SENTIMENT_CACHES = {
-    "title": FNSPID_DIR / "news_sentiment.parquet",
-    "lsa_summary": FNSPID_DIR / "news_summary_sentiment.parquet",
-}
 CHUNK_SIZE = 100_000
 # Fastest for summaries (~130 tokens), and close to the fastest for headlines.
 BATCH_SIZE = 128
@@ -85,8 +79,8 @@ def score_texts(
 
 def score_news_texts(column: str, chunk_size: int = CHUNK_SIZE) -> None:
     """
-    Score every distinct, non-null `column` text of the news not already in its chunks
-    directory, writing one parquet file per `chunk_size` texts. Scores depend only on
+    Score every distinct, non-null `column` text of the news not already in its cache
+    or chunks directory, writing one parquet file per `chunk_size` texts. Scores depend only on
     the text, so a headline or summary repeated across symbols or days is scored once.
     """
 
@@ -99,10 +93,16 @@ def score_news_texts(column: str, chunk_size: int = CHUNK_SIZE) -> None:
     # chunks, so a gap in the numbering can't make a new chunk overwrite an old one.
     next_chunk = max((int(path.stem.split("_")[1]) for path in chunks), default=-1) + 1
 
+    # Texts already in the cache are skipped too, so a rebuilt news file only needs its
+    # new texts scored.
+    cache = SENTIMENT_CACHES[column]
+    scored_files = [f"{chunks_dir}/chunk_*.parquet"] if chunks else []
+    if cache.exists():
+        scored_files.append(str(cache))
     con = duckdb.connect()
     done = (
-        f"SELECT {column} FROM '{chunks_dir}/chunk_*.parquet'"
-        if chunks
+        " UNION ALL ".join(f"SELECT {column} FROM '{f}'" for f in scored_files)
+        if scored_files
         else f"SELECT NULL::VARCHAR AS {column} WHERE false"
     )
     (n_done,) = con.execute(f"SELECT count(*) FROM ({done})").fetchall()[0]
@@ -149,21 +149,27 @@ def load_or_build_news_sentiment(
 ) -> pd.DataFrame:
     """
     FinBERT scores per distinct news `column` text (join to the news on `column`),
-    cached in SENTIMENT_CACHES[column].
+    cached in SENTIMENT_CACHES[column]. Texts of the news that the cache doesn't have
+    yet (all of them on the first run, or new ones after the news is rebuilt) are
+    scored and added, which needs a GPU; `force_build` rescores everything.
     """
 
     cache = SENTIMENT_CACHES[column]
     chunks_dir = sentiment_chunks_dir(column)
-    if not cache.exists() or force_build:
-        if force_build:
-            shutil.rmtree(chunks_dir, ignore_errors=True)
-        score_news_texts(column)
-        copy_to_parquet(
-            duckdb.connect(),
-            f"SELECT * FROM '{chunks_dir}/chunk_*.parquet' ORDER BY {column}",
-            cache,
+    if force_build:
+        shutil.rmtree(chunks_dir, ignore_errors=True)
+        cache.unlink(missing_ok=True)
+
+    score_news_texts(column)
+    if any(chunks_dir.glob("chunk_*.parquet")):
+        scored_files = [f"{chunks_dir}/chunk_*.parquet"]
+        if cache.exists():
+            scored_files.append(str(cache))
+        scores = " UNION ALL BY NAME ".join(
+            f"SELECT * FROM '{f}'" for f in scored_files
         )
-        shutil.rmtree(chunks_dir)
+        copy_to_parquet(duckdb.connect(), f"{scores} ORDER BY {column}", cache)
+    shutil.rmtree(chunks_dir, ignore_errors=True)
 
     return pd.read_parquet(cache, columns=columns)
 

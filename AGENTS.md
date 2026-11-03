@@ -1,56 +1,158 @@
 # AGENTS.md
 
-This file provides guidance to coding agents when working with code in this repository.
+Guidance for coding agents working in this repository.
 
-## Overview
+## The project
 
-A personal data-processing playground with two real components plus scratch work:
+A personal playground for data processing and stock forecasting. Most of the work is in `forecasting/`:
+- An XGBoost model rates each stock **UP / HOLD / DOWN** over the next 7 trading days, trained on the FNSPID dataset (prices for ~7,700 symbols plus ~15M news articles).
+- The news experiments are done: FinBERT news features did **not** improve the 7-day model, because news is priced in by the next open. See `docs/news-experiments.md` before doing more news work.
 
-- `forecasting/` — XGBoost classifier that predicts a 7-trading-day UP/HOLD/DOWN rating per stock (the main, most actively developed part).
-- `news_service/` — Alpaca financial news → Redpanda (Kafka) producer (historical backfill, then live stream).
-- `misc/` — Spark / yfinance / marimo experiments (`pyspark`, `yfinance`); not part of the main pipelines.
+| Path | Contents |
+|---|---|
+| `forecasting/data.py` | price dataset: loading, labels, bad-price filter, splits |
+| `forecasting/indicators.py`, `models.py` | feature definitions (enums + indicator registry) |
+| `forecasting/features.py` | feature matrix (`NON_FEATURE_COLUMNS`) |
+| `forecasting/news.py` | news parsing and cleaning, sentiment cache paths |
+| `forecasting/sentiment.py` | FinBERT scoring (the only module needing torch) |
+| `forecasting/news_features.py` | news features per stock and day, joined onto the price dataset |
+| `forecasting/training/` | `xgboost_model.py` (fit, evaluate, save), `tuning.py` (Optuna), `evaluation.py` (ranking metrics), `experiments.py` (news experiments) |
+| `news_service/`, `utils/` | Alpaca news → Redpanda (Kafka) producer, independent of `forecasting/` |
+| `misc/` | Spark and yfinance experiments, not part of either pipeline |
+| `docs/` | `stock-analysis-planning.md` (original plan), `news-experiments.md` (results) |
 
 ## Commands
 
-Python 3.13, managed with `uv`. Dependencies are split into groups in `pyproject.toml` (`forecasting`, `misc`, `news-features`, `news-service`); the base set has only duckdb/pandas/pyarrow/pydantic. Use `uv sync --group forecasting` (etc.) to install the group you need.
+Python 3.13 with `uv`. Base dependencies: duckdb, pandas, pyarrow, pydantic, python-dotenv, pyyaml, ruff, ty. Groups in `pyproject.toml`:
+- `forecasting`: xgboost, optuna, scikit-learn, cupy
+- `news-features`: torch, transformers
+- `news-service`: alpaca-py, kafka-python
+- `misc`: pyspark, marimo, yfinance
 
 ```bash
-uv run ruff check .          # lint (ruff and ty are base dependencies)
-uv run ruff format .
-uv run ty check              # type check
-
-# Forecasting (run as modules from repo root — imports are absolute, e.g. `forecasting.data`)
-uv run python -m forecasting.training.xgboost_model   # train once with hand-picked params, print test comparison
-uv run python -m forecasting.training.tuning          # Optuna search -> refit -> evaluate -> save model
-uv run python -m forecasting.news                     # parse + clean FNSPID news, print coverage stats
-uv run --group news-features python -m forecasting.sentiment   # FinBERT headline + summary scores (~35 min on GPU, resumable)
-
-# News service
-make up                      # start Redpanda (2 brokers) + console via docker compose
-make run-news                # uv run python -m news_service
-make down | logs | ps | clean
+uv run ruff check . && uv run ruff format .
+uv run --group forecasting --group news-features ty check
 ```
 
-There is no test suite (`.pytest_cache` exists but there is no `tests/` directory).
+Run modules from the repo root (imports are absolute). The forecasting pipeline, in build order:
 
-Config/secrets: `configs/config.yaml` (Kafka bootstrap server + topic names), `configs/stocks.yaml` (symbols for the news service), `.env` holds `ALPACA_API_KEY` / `ALPACA_SECRET_KEY`. `news_service` reads configs via relative paths, so run it from the repo root.
+```bash
+uv run python -m forecasting.news                                         # parse + clean news, print coverage
+uv run --group news-features python -m forecasting.sentiment              # FinBERT scores (GPU, ~35 min first time, then only new texts)
+uv run python -m forecasting.news_features                                # news features (~1 min)
+uv run --group forecasting python -m forecasting.training.xgboost_model   # one fit with hand-picked params
+uv run --group forecasting python -m forecasting.training.tuning          # Optuna search, refit, evaluate, save the model
+uv run --group forecasting python -m forecasting.training.experiments     # news experiments (~11 min, resumable)
+```
 
-## Forecasting architecture
+The price dataset builds on first use (about 4 minutes). News service: `make up` (Redpanda + console via docker compose), `make run-news`, `make down | logs | ps | clean`.
 
-Data flow: raw CSVs → cached parquet → per-symbol indicators + labels → time-based splits → XGBoost.
+There is no test suite. Verify changes with ruff, ty, and a script against the real data. Do it on a symbol sample first, since full builds are slow.
 
-- **`data.py`** owns the dataset. `load_or_build_raw_stock_prices` uses DuckDB to read `data/fnspid/stock_prices/*.csv` (FNSPID dataset; symbol is taken from the filename) into `data/fnspid/stock_prices.parquet`. `load_or_build_metrics_dataset` runs per-symbol indicators + labeling, then cross-sectional market indicators, in a single pass (`build_metrics_dataset`; unlabeled rows are dropped only at the end so they still count towards the market indicators, and indicator columns are stored as float32 to fit in ~30 GB RAM) and caches `data/fnspid/stock_features_dataset.parquet` (full history; its `start_date` argument only filters the returned rows). **`START_DATE` (`2010-01-01`) in `data.py` is the single definition of the experiment period** — it is the loader's default (pass `start_date=None` for the full history) and both training entrypoints use it, because FNSPID news coverage only becomes meaningful from 2010. **Bad prices** (a close or open more than `MAX_DAILY_MOVE` = +100% above the previous close) are removed by `flag_bad_prices`: rows whose 60-row indicator lookback (`BAD_PRICE_LOOKBACK_ROWS`) or label window touches such a day are dropped. **Both loaders return the cached parquet if it exists** — pass `force_build=True` (or delete the parquet) after changing indicators, labeling, or feature columns, otherwise you'll silently train on stale data.
-- **`indicators.py` / `models.py`** — indicators are a registry: add an `IndicatorName` enum member in `models.py` and a matching `IndicatorSpec` entry in the `INDICATORS` dict in `indicators.py`. All indicators use split-adjusted prices (`adj_*` columns, computed in the DuckDB query), so raw price levels never become features. Cross-sectional indicators (market median return, excess return, per-date percentile ranks) live in `MarketIndicatorName` / `compute_market_indicators`, since they need every symbol's row for a date.
-- **`features.py`** — `compute_model_features` derives the feature matrix by *dropping* `NON_FEATURE_COLUMNS` from the dataset. Any new non-feature column added to the dataset (label helpers, price levels, anything that looks ahead) **must be added to that list** or it leaks into the model as a feature.
-- **Labels** (`label_stock`) — UP/DOWN/HOLD by comparing the forward 7-row log return, entering at the next row's open and exiting at the open 7 rows later (`log(adj_open[t+8] / adj_open[t+1])`, decision after the close of `t`), to `k * ewm_std * sqrt(horizon)` (volatility-scaled threshold). Rows whose exit is >14 calendar days ahead (missing data) or whose entry/exit open is missing (`open <= 0`, common before ~1990) are dropped. `label_end_date` is the exit date. It also emits `label_end_date` and `trailing_return`, which are used only by evaluation baselines, not as features.
-- **Leakage control is central.** Splits are chronological by *date* (not by row or symbol), with a `days_gap` (14 days) at each boundary so forward label windows don't overlap. `build_split_datasets` gives train/val/test (72/13/15); `walk_forward_splits` carves expanding-window folds out of the pre-test region. When searching on a symbol subset, pass `boundary_dates=dataset["date"].unique()` so fold and test boundaries match the full dataset. `tuning.py` asserts the no-overlap invariants — keep them if you change splitting.
-- **`training/xgboost_model.py`** — `fit_xgboost` applies inverse-frequency class weights to train *and* eval sets; `BASE_PARAMS` targets GPU (`device: cuda`, with `cupy-cuda13x` in the group), so training needs a CUDA GPU or a changed `device`. `predict_proba` caps prediction at the best iteration. `evaluate_model` compares against baselines (majority class, persistence via `resolved_label_lag`, trailing-return momentum, class prior) on the test rows where a persistence label is available. Model is saved to `data/artifacts/xgboost_model.ubj`.
-- **`training/tuning.py`** — multi-objective Optuna (minimize log loss, maximize macro F1) with walk-forward CV on a 30% symbol sample, stored in SQLite at `data/artifacts/optuna_study.db` under `STUDY_NAME` with `load_if_exists=True`, so runs resume. A resumed study must use the same `SEARCH_SYMBOL_FRACTION`/`SEARCH_SEED`/`N_FOLDS`/`START_DATE` (enforced via `search_config` user attr) — change `STUDY_NAME` whenever these or the dataset (labels, features, filtering) change. The old `xgboost-tuning` study in the same DB is from the close-to-close, full-history dataset and is not comparable. `min_child_weight` is scaled by the symbol fraction only inside the objective; the top Pareto trials are then refit on all symbols and picked by validation macro F1.
+## Rules that matter
 
-- **News** — `news.py` parses the 23 GB FNSPID news CSV (single-threaded DuckDB read, multi-line quoted fields) into `news_raw.parquet`, then cleans and dedupes it into `news.parquet` (symbol, `published_at` UTC, title, url, LSA summary). `sentiment.py` scores each *distinct text* of a news column with FinBERT (`ProsusAI/finbert`, fp16 on GPU), one cache per column in `SENTIMENT_CACHES`: headlines into `news_sentiment.parquet` (join on `title`) and LSA summaries of the article bodies into `news_summary_sentiment.parquet` (join on `lsa_summary`), each with `p_positive`/`p_negative`/`p_neutral` and `sentiment = p_positive - p_negative`. Article bodies (and so summaries) exist for only ~10–40% of articles before 2021 and all of them from 2021 on, so summary features are far denser in val/test than in train — keep them NaN where missing and don't add a has-summary flag. Scoring writes chunks to `<cache stem>_chunks/` so an interrupted run resumes; they are merged and removed at the end. It needs the `news-features` group (torch, transformers), which the rest of `forecasting/` does not import.
+1. **Cached loaders go stale.** Every `load_or_build_*` returns its parquet if the file exists. After changing the code that builds a cache, rebuild it (`force_build=True`) and everything downstream of it, or you'll silently use old data. The chain is listed under [Data files](#data-files).
+2. **New dataset columns become features unless listed.** `compute_model_features` uses every column not in `features.NON_FEATURE_COLUMNS`. Add any non-feature column (prices, label helpers, anything forward-looking) there. `experiments.py` lists its features explicitly, and checks they match this set.
+3. **No lookahead.**
+   - Splits are by date, with a 14-day gap at each boundary.
+   - News must be available before the label's entry at the next open (see the timing rule under [News](#news)).
+   - `tuning.py` asserts the split invariants; keep them.
+4. **`START_DATE` (`2010-01-01`, in `data.py`) is the single definition of the experiment period.** It is the loaders' default and every entrypoint uses it.
+5. **Change `tuning.STUDY_NAME` whenever the dataset (labels, features, filtering) or the search settings change.** A resumed study refuses different search settings, but nothing detects a changed dataset.
+6. **Sentiment scores are joined on the exact headline or summary text.**
+   - Keep the news dedupe deterministic, with its total ordering.
+   - After rebuilding `news.parquet`, rerun `forecasting.sentiment`; it only scores texts it hasn't seen.
+   - `build_news_features` refuses to run while any headline is unscored.
+7. **Resources: ~30 GB RAM, one 11 GB CUDA GPU.**
+   - Full-dataset steps peak at 15–22 GB, so avoid extra full-size pandas copies.
+   - Do big scans and joins in DuckDB, written straight to parquet with `data.copy_to_parquet`, which writes atomically.
+   - Store features as float32.
+   - XGBoost (`device: cuda`) and FinBERT expect the GPU.
+8. **Untracked:** `data/fnspid/*`, `data/artifacts/*`, `.env` (`ALPACA_API_KEY`, `ALPACA_SECRET_KEY`), `uv.lock`.
 
-`data/` is untracked (large datasets, parquet caches, Optuna DB, model artifacts), as is `.env`.
+## Forecasting
+
+### Data files
+
+All under `data/fnspid/`. Each file is built from the ones above it:
+
+| File | Built by |
+|---|---|
+| `stock_prices.parquet` (from `stock_prices/*.csv`, symbol from the filename) | `data.load_or_build_raw_stock_prices` |
+| `stock_features_dataset.parquet` | `data.load_or_build_metrics_dataset` |
+| `news_raw.parquet` → `news.parquet` (from `nasdaq_external_data.csv`, 23 GB) | `news.build_raw_news`, `news.load_or_build_news` |
+| `news_sentiment.parquet`, `news_summary_sentiment.parquet` | `sentiment.load_or_build_news_sentiment` |
+| `news_features.parquet`, `news_features_same_day.parquet` | `news_features.load_or_build_news_features` |
+
+Models, the Optuna study (`optuna_study.db`) and experiment results (`experiments/`) live in `data/artifacts/`.
+
+### Price dataset and labels (`data.py`)
+
+- **The cache keeps the full history (1962–2023).** `start_date` only filters what is returned, so early-2010 indicators still look back into 2009.
+- **Adjusted prices.** Prices are split-adjusted (`adj_*`), so raw price levels never become features.
+- **Build order.** `build_metrics_dataset` computes the per-symbol indicators and labels in one pass, then the cross-sectional market indicators. Unlabeled rows are dropped only at the end.
+- **Bad prices.** A close or open more than +100% above the previous close (`MAX_DAILY_MOVE`) is treated as bad data. Rows whose 60-row lookback or label window touches such a day are dropped.
+- **Label** (`label_stock`):
+  - Decision after the close of row `t`; enter at the next open; exit at the open 7 rows later: `forward_return = log(adj_open[t+8] / adj_open[t+1])`.
+  - UP / DOWN beyond ±`0.5 × ewm_std × √7` (`threshold`), HOLD otherwise. Roughly 27% DOWN, 43% HOLD, 31% UP.
+  - Rows are dropped if the exit is more than 14 calendar days ahead or an open is missing.
+  - `label_end_date` and `trailing_return` only feed evaluation baselines.
+- **Splits.** `build_split_datasets` gives train / val / test by date (72 / 13 / 15): on the 2010+ data, 2010-01 → 2020-01, 2020-01 → 2021-10, 2021-11 → 2023-12. `walk_forward_splits` makes expanding folds before the test period. When working on a symbol sample, pass the full dataset's dates as `boundary_dates`.
+
+### Features
+
+- **Price indicators** (`IndicatorName`) form a registry: add the enum member in `models.py` and its `IndicatorSpec` in `indicators.INDICATORS`.
+- **Cross-sectional indicators** (`MarketIndicatorName`, `compute_market_indicators`) compare each stock with the others on the same date: market median return, excess return, percentile ranks.
+- **News features:** `NewsFeatureName` (10, from headlines) and `SummaryNewsFeatureName` (4, from article summaries).
+- **Counts:** 32 price features, 46 with news.
+
+### Training and evaluation (`training/`)
+
+- **`xgboost_model.py`**
+  - `fit_xgboost` uses inverse-frequency class weights on train and eval sets, so predicted probabilities lean toward 1/3 and aren't calibrated.
+  - `predict_proba` caps prediction at the best iteration.
+  - `evaluate_model` compares macro F1 and log loss against the baselines: majority class, persistence, trailing momentum, class prior.
+  - `save_model` writes `xgboost_model.ubj` plus `xgboost_model.json` (features, params, study, splits).
+- **`tuning.py`**
+  - Multi-objective Optuna (log loss, macro F1), with walk-forward CV on a 30% symbol sample; `min_child_weight` is scaled by that fraction inside the objective.
+  - The top Pareto trials are refit on all symbols and picked by validation macro F1.
+  - The current study is `xgboost-2010-open-to-open`. The older `xgboost-tuning` study in the same DB used a different dataset.
+- **`evaluation.py`**
+  - The ranking metrics are per-date rank IC of `P(UP) − P(DOWN)`: overall, within volatility terciles ("volatility-neutral"), by liquidity quintile, and with / without news. Also decile returns (simple returns) and calibration error.
+  - t-stats use every 8th date, because label windows overlap.
+  - **Judge new features on volatility-neutral and liquid-stock IC, not macro F1.** The price model's score is about −0.8 rank-correlated with volatility, and most of its edge is "volatile, illiquid stocks fall".
+- **`experiments.py`**
+  - Runs A (prices), B (+ headline news), C (+ summary news), `B_placebo` (news shuffled between stocks within each date) and `B_same_day`.
+  - Every run uses the same rows, splits and tuned params (`load_tuned_params`), with 3 seeds each.
+  - Each run saves `experiments/<name>/seed<k>.{json,npy}` and is skipped when rerun with the same config. `summarize` writes `summary.json`.
+
+### News
+
+- **`news.py`**
+  - Reads the CSV single-threaded, because article bodies are multi-line quoted fields.
+  - Keeps symbol, `published_at` (UTC), title, url and `lsa_summary`.
+  - Removes duplicates (same symbol, same title ignoring case, same UTC day).
+  - Drops symbol-days with more than 200 articles (`MAX_ARTICLES_PER_SYMBOL_DAY`). These come from a generic feed scraped under ~50 tickers in Dec 2023.
+- **`sentiment.py`**
+  - Scores each distinct headline and summary with `ProsusAI/finbert` (fp16): `p_positive`, `p_negative`, `p_neutral`, `sentiment = p_positive − p_negative`.
+  - Writes resumable chunks to `<cache>_chunks/` while scoring.
+- **`news_features.py`**
+  - One row per price row from 2009, built in DuckDB. Windows (1 day, 7 days, recency-weighted with a 3-day half-life) count trading days of the market calendar.
+  - Counts are 0 and sentiment is NaN when a window has no articles. `load_fusion_dataset` left-joins the features onto the price dataset, keeping the same rows in the same order.
+- **Timing rule.** Most timestamps are dates only, so news timing goes by the article's UTC date D.
+  - By default, articles count from the **first trading day after D**.
+  - `same_day=True` counts them on D. That is **also safe for these labels**: D ends at 20:00 New York time, before the next open where trades enter. It is one day fresher, and made no difference in the experiments. It would be lookahead for a trade entered at D's close.
+- **Coverage.**
+  - ~39% of rows have a headline in the last 7 days.
+  - Summaries exist for only 10–40% of articles before 2021 and all of them after: 15% of train rows against 39% of test rows. Keep summary features NaN where missing, with no has-summary flag.
+  - ~5% of articles are roundups tagged to 50+ stocks.
 
 ## News service
 
-`news_service/__main__.py` creates two topics (live + historical, 2 partitions, RF 1), runs `produce_historical_news` once, then blocks in `news_stream` for live news. Messages are modeled with `utils/models.py:NewsMessage` (pydantic); `utils/text_utils.py` cleans HTML/markdown from article text. Redpanda is exposed to the host on `localhost:19092` (matches `bootstrap_servers` in config).
+- **Flow.** `news_service/__main__.py` creates live and historical topics (2 partitions, replication factor 1), backfills with `produce_historical_news`, then streams live news with `news_stream`.
+- **Messages.** `utils/models.py:NewsMessage` (pydantic); `utils/text_utils.py` strips HTML and markdown.
+- **Config.** `configs/config.yaml` holds Kafka (`localhost:19092`) and the topic names; `configs/stocks.yaml` the symbols. They are read by relative path, so run the service from the repo root.
+- **Known bugs:**
+  - `producer.py` sends only the third article of each response, and fails with fewer than 3.
+  - `timestamp_ms` is the run time, not the article's `created_at`.
+  - `NewsMessage` has no `symbols` field.

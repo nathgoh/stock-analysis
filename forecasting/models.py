@@ -51,3 +51,33 @@ class MarketIndicatorName(StrEnum):
     EXCESS_RETURN_5D = "excess_return_5d"
     MOMENTUM_14D_RANK = "momentum_14d_rank"
     RELATIVE_VOLUME_21D_RANK = "relative_volume_21d_rank"
+
+
+class NewsFeatureName(StrEnum):
+    """
+    Per stock and trading day, from the FinBERT scores of the headlines. Windows count
+    trading days, an article dated D counts from the next trading day after D.
+    """
+
+    NEWS_COUNT_1D = "news_count_1d"
+    NEWS_COUNT_7D = "news_count_7d"
+    SENTIMENT_MEAN_1D = "sentiment_mean_1d"
+    SENTIMENT_MEAN_7D = "sentiment_mean_7d"
+    SENTIMENT_STD_7D = "sentiment_std_7d"
+    POSITIVE_RATIO_1D = "positive_ratio_1d"
+    NEGATIVE_COUNT_1D = "negative_count_1d"
+    SENTIMENT_CHANGE_3D = "sentiment_change_3d"
+    SENTIMENT_EWM = "sentiment_ewm"
+    DAYS_SINCE_LAST_NEWS = "days_since_last_news"
+
+
+class SummaryNewsFeatureName(StrEnum):
+    """
+    Like `NewsFeatureName`, from the FinBERT scores of the article summaries, which only
+    exist for some articles before 2021.
+    """
+
+    SUMMARY_COUNT_7D = "summary_count_7d"
+    SUMMARY_SENTIMENT_MEAN_1D = "summary_sentiment_mean_1d"
+    SUMMARY_SENTIMENT_MEAN_7D = "summary_sentiment_mean_7d"
+    SUMMARY_SENTIMENT_EWM = "summary_sentiment_ewm"

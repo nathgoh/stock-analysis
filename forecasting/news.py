@@ -10,6 +10,20 @@ CACHE_RAW_NEWS_DIR = FNSPID_DIR / "news_raw.parquet"
 CACHE_NEWS_DIR = FNSPID_DIR / "news.parquet"
 # CSV rows DuckDB could not parse, kept for inspection.
 NEWS_REJECTS_DIR = FNSPID_DIR / "news_raw_rejects.parquet"
+# A symbol with more articles than this on one UTC day (after deduping) has a generic
+# news feed scraped under its ticker, not news about it: from 2023-11-29 to 2023-12-16,
+# ~50 preferred shares, warrants and ETFs get hundreds of unrelated articles a day. All
+# of that symbol's articles on that day are dropped. Real news peaks far lower (AAPL
+# <= 55 a day, NVDA <= 94, nothing above ~110 before that window).
+MAX_ARTICLES_PER_SYMBOL_DAY = 200
+# FinBERT scores per distinct news text column (built by `forecasting.sentiment`, which
+# needs torch): headlines, and the LSA summaries of the article bodies (which only exist
+# for some articles before 2021, and all of them after). Kept here so the news features
+# can read them without importing torch.
+SENTIMENT_CACHES = {
+    "title": FNSPID_DIR / "news_sentiment.parquet",
+    "lsa_summary": FNSPID_DIR / "news_summary_sentiment.parquet",
+}
 
 
 def build_raw_news(force_build=False) -> Path:
@@ -62,8 +76,9 @@ def load_or_build_news(
     force_build=False, columns: list[str] | None = None
 ) -> pd.DataFrame:
     """
-    Clean the parsed news, drop rows missing a symbol, timestamp or title, and dedupe
-    repeated headlines (same symbol, same title ignoring case, same UTC day).
+    Clean the parsed news, drop rows missing a symbol, timestamp or title, dedupe
+    repeated headlines (same symbol, same title ignoring case, same UTC day), and drop
+    symbol-days with more than MAX_ARTICLES_PER_SYMBOL_DAY articles.
 
     Save the result as a parquet file, `columns` selects which columns to load from it.
     """
@@ -71,16 +86,26 @@ def load_or_build_news(
     if not CACHE_NEWS_DIR.exists() or force_build:
         raw_news = build_raw_news()
         query = f"""
-            SELECT symbol, published_at, title, url, lsa_summary
-            FROM '{raw_news}'
-            WHERE symbol IS NOT NULL
-                AND symbol != ''
-                AND published_at IS NOT NULL
-                AND title IS NOT NULL
-            QUALIFY row_number() OVER (
-                PARTITION BY symbol, lower(title), published_at::DATE
-                ORDER BY published_at, url
-            ) = 1
+            WITH deduped AS (
+                SELECT symbol, published_at, title, url, lsa_summary
+                FROM '{raw_news}'
+                WHERE symbol IS NOT NULL
+                    AND symbol != ''
+                    AND published_at IS NOT NULL
+                    AND title IS NOT NULL
+                -- The full ordering makes every rebuild keep the same row (so its
+                -- sentiment scores exist): ties are headlines that only differ in
+                -- case, or duplicates with different summaries (one with a summary
+                -- is kept over one without).
+                QUALIFY row_number() OVER (
+                    PARTITION BY symbol, lower(title), published_at::DATE
+                    ORDER BY published_at, url, title, lsa_summary NULLS LAST
+                ) = 1
+            )
+            SELECT *
+            FROM deduped
+            QUALIFY count(*) OVER (PARTITION BY symbol, published_at::DATE)
+                <= {MAX_ARTICLES_PER_SYMBOL_DAY}
             ORDER BY symbol, published_at
         """
         copy_to_parquet(duckdb.connect(), query, CACHE_NEWS_DIR)

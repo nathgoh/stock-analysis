@@ -35,7 +35,7 @@ FINAL_CANDIDATES = 3
 STUDY_NAME = "xgboost-2010-open-to-open"
 
 
-def build_params(trial: optuna.Trial) -> dict:
+def build_params(trial: optuna.trial.BaseTrial) -> dict:
     """
     Search space to tune hyperparameters on.
     """
