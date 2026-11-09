@@ -4,3 +4,7 @@ kafka:
   topics:
     live: market-news
     historical: historical-market-news
+
+news:
+  # Days of history the producer backfills on startup, before streaming live news.
+  backfill_days: 7

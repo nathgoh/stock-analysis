@@ -149,10 +149,11 @@ Models, the Optuna study (`optuna_study.db`) and experiment results (`experiment
 
 ## News service
 
-- **Flow.** `news_service/__main__.py` creates live and historical topics (2 partitions, replication factor 1), backfills with `produce_historical_news`, then streams live news with `news_stream`.
-- **Messages.** `utils/models.py:NewsMessage` (pydantic); `utils/text_utils.py` strips HTML and markdown.
-- **Config.** `configs/config.yaml` holds Kafka (`localhost:19092`) and the topic names; `configs/stocks.yaml` the symbols. They are read by relative path, so run the service from the repo root.
-- **Known bugs:**
-  - `producer.py` sends only the third article of each response, and fails with fewer than 3.
-  - `timestamp_ms` is the run time, not the article's `created_at`.
-  - `NewsMessage` has no `symbols` field.
+- **Flow.** `news_service/__main__.py` creates live and historical topics (2 partitions, replication factor 1). It backfills the last `news.backfill_days` days (`configs/config.yaml`, default 7) into `historical-market-news` with `produce_historical_news`, then streams live news into `market-news` with `news_stream`.
+- **Messages.** One message per article, keyed by Alpaca's article id, with the article's `created_at` as the Kafka timestamp. The value is `utils/models.py:NewsMessage` as JSON: id, headline, summary, content (cleaned by `utils/text_utils.py`), source, url, author, symbols, created_at, updated_at. Consumers should dedupe on `id`: restarts re-backfill, and the backfill and live stream can overlap.
+- **Symbols.** `configs/stocks.yaml` lists the symbols, `"*"` for all news. The live stream supports `"*"` directly. The REST backfill has no wildcard, so it leaves `symbols` empty instead.
+- **Backfill.**
+  - It fetches one day per request, because the SDK loads every page (50 articles each) into memory, and it flushes the producer after each day.
+  - Articles come sorted by `updated_at`, not `created_at`. Articles without a body are kept, since the headline is what gets scored.
+  - Volume with `"*"`: about 4,000 articles a day (Benzinga and fiscal.ai), roughly 40% without content.
+- **Config.** Kafka is at `localhost:19092`. Configs are read by relative path, so run the service from the repo root (`make up`, then `make run-news`; the console is at http://localhost:8080).

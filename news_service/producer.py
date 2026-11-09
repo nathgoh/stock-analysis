@@ -1,60 +1,61 @@
-import os
 from datetime import UTC, datetime, timedelta
 
 from alpaca.data.historical import NewsClient
-from alpaca.data.models import News, NewsSet
+from alpaca.data.models import NewsSet
 from alpaca.data.requests import NewsRequest
-from dotenv import load_dotenv
 from kafka import KafkaProducer
 
-from utils.models import NewsMessage
-from utils.text_utils import clean_text
+from .messages import alpaca_credentials, send_article
 
-load_dotenv()
-
-ALPACA_API_KEY: str | None = os.getenv("ALPACA_API_KEY")
-ALPACA_SECRET_KEY: str | None = os.getenv("ALPACA_SECRET_KEY")
-
-
-def on_success(metadata) -> None:
-    print(f"Message produced to topic '{metadata.topic}' at offset {metadata.offset}")
-
-
-def on_error(e) -> None:
-    print(f"Error sending message: {e}")
+# Days of news to backfill when no `backfill_days` is configured.
+DEFAULT_BACKFILL_DAYS = 7
 
 
 def produce_historical_news(
-    redpanda_client: KafkaProducer, topic: str, symbols: list[str]
+    redpanda_client: KafkaProducer,
+    topic: str,
+    symbols: list[str],
+    backfill_days: int = DEFAULT_BACKFILL_DAYS,
 ) -> None:
-    rest_client = NewsClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+    """
+    Send every article of the last `backfill_days` days for `symbols` ("*" for all
+    news), oldest first. Fetched one day at a time: the SDK loads all pages of a
+    request (50 articles each) into memory before returning.
+    """
 
-    for symbol in symbols:
-        now = datetime.now(tz=UTC)
+    rest_client = NewsClient(*alpaca_credentials())
+    # The REST API has no "*" wildcard (only the live stream does), leaving the symbols
+    # out returns all news.
+    symbol_filter = None if "*" in symbols else ",".join(symbols)
+
+    end = datetime.now(tz=UTC)
+    day_start = end - timedelta(days=backfill_days)
+    total = 0
+    while day_start < end:
+        day_end = min(day_start + timedelta(days=1), end)
         request_params = NewsRequest(
-            symbols=symbol,
-            start=now - timedelta(days=365),
-            end=now,
+            symbols=symbol_filter,
+            start=day_start,
+            end=day_end,
             include_content=True,
-            exclude_contentless=True,
+            # Many short news items (e.g. analyst actions) have no body, the headline is
+            # what gets scored.
+            exclude_contentless=False,
             sort="asc",
-            limit=6000,
         )
-        news: NewsSet = rest_client.get_news(request_params)
-        news_article: News = news.data["news"][2]
+        news = rest_client.get_news(request_params)
+        assert isinstance(news, NewsSet)
 
-        message = NewsMessage(
-            headline=news_article.headline,
-            summary=news_article.summary,
-            content=clean_text(news_article.content),
-            date=news_article.created_at,
-        )
+        articles = news.data.get("news", [])
+        for article in articles:
+            send_article(redpanda_client, topic, article)
+        # Flush per day, so an interrupted backfill has sent every finished day.
+        redpanda_client.flush()
 
-        future = redpanda_client.send(
-            topic,
-            value=message.to_kafka_value(),
-            key=symbol,
-            timestamp_ms=int(now.timestamp() * 1000),
+        total += len(articles)
+        print(
+            f"Backfilled {len(articles)} articles from {day_start:%Y-%m-%d %H:%M} UTC "
+            f"({total} total)",
+            flush=True,
         )
-        future.add_callback(on_success)
-        future.add_errback(on_error)
+        day_start = day_end

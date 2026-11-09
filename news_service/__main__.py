@@ -4,7 +4,7 @@ from kafka.admin import KafkaAdminClient, NewTopic
 from kafka.errors import TopicAlreadyExistsError
 from kafka.serializer import DefaultSerializer
 
-from .producer import produce_historical_news
+from .producer import DEFAULT_BACKFILL_DAYS, produce_historical_news
 from .stream import news_stream
 
 TOPIC_NUM_PARTITIONS = 2
@@ -55,6 +55,7 @@ def main():
             news_producer,
             config["kafka"]["topics"]["historical"],
             stocks_config["stocks"],
+            config.get("news", {}).get("backfill_days", DEFAULT_BACKFILL_DAYS),
         )
         news_producer.flush()
 
